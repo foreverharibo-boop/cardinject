@@ -1,0 +1,13 @@
+{
+    "display_name": "CardInject",
+    "loading_order": 999999,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "혜담",
+    "version": "1.0.0",
+    "homePage": "",
+    "auto_update": false,
+    "generate_interceptor": "ciInterceptor"
+}
