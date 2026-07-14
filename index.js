@@ -54,7 +54,7 @@ function _getPresetPrompts() {
         ?? getCtx()?.oai_settings
         ?? window.SillyTavern?.getContext?.()?.oaiSettings;
     if (!oai || !Array.isArray(oai.prompts)) {
-        console.warn('[CI] oai_settings를 못 찾음 — 프리셋 프롬프트 목록 불러오기 실패');
+        console.warn('[CI] oai_settings를 못 찾음 — 프리셋 프롬프트 목록 불러오기 실패. oai:', oai);
         return [];
     }
 
@@ -81,6 +81,7 @@ function _getPresetPrompts() {
             enabledInPreset: entry.enabled !== false,
         });
     }
+    console.log('[CI][PRESET DEBUG] oai 발견:', !!oai, '| prompts 총:', oai.prompts?.length, '| prompt_order 개수:', oai.prompt_order?.length, '| charId:', charId, '| orderList 길이:', orderList.length, '| 결과:', result.length);
     return result;
 }
 
