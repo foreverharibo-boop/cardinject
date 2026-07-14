@@ -9,6 +9,7 @@ const PT = { IN_PROMPT: 0, IN_CHAT: 1, BEFORE_PROMPT: 2 };
 
 // fetch hook 전용 타입
 const PT_NOTE = 12;    // 작가노트 텍스트 자체에 직접 이어붙임 (위치 100% 일치 보장)
+const PT_PRESET_REL = 13; // 특정 프리셋 프롬프트 바로 앞/뒤 (동적, POSITIONS 테이블 밖에서 처리)
 
 // ⚠️ ST 프롬프트 실제 순서 (중요):
 // [시스템 프롬프트] → [캐릭터 설명/시나리오] → [sys_top/sys_bottom/after_char 자리]
@@ -37,7 +38,63 @@ const POSITION_ALIASES = {
 };
 
 function _resolvePosition(key) {
+    if (typeof key === 'string' && (key.startsWith('preset_after_') || key.startsWith('preset_before_'))) {
+        return { label: key, type: PT_PRESET_REL, depth: 0 };
+    }
     return POSITIONS[key] || POSITIONS[POSITION_ALIASES[key]] || POSITIONS.sys_top;
+}
+
+// ── 프리셋 프롬프트 목록 불러오기 ────────────────────────────────────────────
+// ST의 OpenAI/Chat Completion 프리셋에 등록된 프롬프트 항목들의 목록을 읽어와서
+// 카테고리 위치를 "이 프리셋 앞/뒤"로 지정할 수 있게 함.
+function _getPresetPrompts() {
+    const oai = _api?.oai_settings
+        ?? window.oai_settings
+        ?? getCtx()?.oaiSettings
+        ?? getCtx()?.oai_settings
+        ?? window.SillyTavern?.getContext?.()?.oaiSettings;
+    if (!oai || !Array.isArray(oai.prompts)) {
+        console.warn('[CI] oai_settings를 못 찾음 — 프리셋 프롬프트 목록 불러오기 실패');
+        return [];
+    }
+
+    const idx = getSelectedIdx();
+    const char = getAllChars()[idx];
+    const charId = char?.avatar ?? char?.name ?? null;
+    let order = null;
+    if (Array.isArray(oai.prompt_order)) {
+        order = oai.prompt_order.find(o => o.character_id === charId)
+             ?? oai.prompt_order.find(o => o.character_id === 100001)
+             ?? oai.prompt_order[0];
+    }
+    const orderList = order?.order ?? [];
+
+    const result = [];
+    for (const entry of orderList) {
+        const p = oai.prompts.find(pp => pp.identifier === entry.identifier);
+        if (!p) continue;
+        if (p.marker) continue; // 마커류(=Chat History 등 자리표시자)는 제외
+        result.push({
+            identifier: p.identifier,
+            name: p.name || p.identifier,
+            content: p.content || '',
+            enabledInPreset: entry.enabled !== false,
+        });
+    }
+    return result;
+}
+
+// 카테고리 위치 select에 붙일 "프리셋 프롬프트 앞/뒤" 동적 옵션 HTML 생성
+function _presetRelOptionsHtml(currentPosition) {
+    const prompts = _getPresetPrompts();
+    if (!prompts.length) return '';
+    const opts = prompts.map(p => {
+        const afterVal  = `preset_after_${p.identifier}`;
+        const beforeVal = `preset_before_${p.identifier}`;
+        return `<option value="${esc(afterVal)}" ${currentPosition===afterVal?'selected':''}>🎛️ ${esc(p.name)} 다음</option>` +
+               `<option value="${esc(beforeVal)}" ${currentPosition===beforeVal?'selected':''}>🎛️ ${esc(p.name)} 앞</option>`;
+    }).join('');
+    return `<optgroup label="── 프리셋 프롬프트 기준 ──">${opts}</optgroup>`;
 }
 
 // 위치에 따른 강도 매핑
@@ -739,6 +796,7 @@ function render() {
             <span class="ci-lbl">위치</span>
             <select class="ci-sel ci-pos-sel" data-i="${i}">
               ${Object.entries(POSITIONS).map(([k,v])=>`<option value="${k}" ${c.position===k?'selected':''}>${v.label}</option>`).join('')}
+              ${_presetRelOptionsHtml(c.position)}
             </select>
           </div>
           ${showDepth?`
@@ -753,6 +811,11 @@ function render() {
           <div class="ci-row">
             <span class="ci-lbl">방식</span>
             <span class="ci-hint">작가노트 텍스트에 직접 합쳐짐 — 위치 100% 일치, 조정 불필요</span>
+          </div>`:''}
+          ${_resolvePosition(c.position).type === PT_PRESET_REL ? `
+          <div class="ci-row">
+            <span class="ci-lbl">방식</span>
+            <span class="ci-hint">선택한 프리셋 프롬프트 바로 옆에 삽입됨</span>
           </div>`:''}
         </div>
       </div>`;
@@ -1185,6 +1248,62 @@ function _installFetchHook() {
                                 JSON.stringify(debugBody.messages.slice(-3), null, 2));
                         }
                     } catch (_) {}
+                }
+
+                // ── 카테고리를 특정 프리셋 프롬프트 앞/뒤에 끼워넣기 ──────────────
+                // position이 'preset_after_<id>' / 'preset_before_<id>' 형태인 카테고리들.
+                // 작가노트 앵커와 같은 방식으로 대상 프리셋 프롬프트의 메시지를 찾아서
+                // 그 옆에 새 메시지로 삽입함.
+                const presetRelCats = cats.filter(c => _resolvePosition(c.position)?.type === PT_PRESET_REL);
+                if (presetRelCats.length && Array.isArray(body.messages)) {
+                    const presetPrompts = _getPresetPrompts();
+                    const ctxN2 = getCtx();
+                    const charName2 = ctxN2?.name2 || getAllChars()[getSelectedIdx()]?.name || '';
+                    const userName2 = ctxN2?.name1 || window.name1 || '';
+                    const substitute2 = (s) => s
+                        .replace(/\{\{char\}\}/gi, charName2)
+                        .replace(/\{\{user\}\}/gi, userName2);
+
+                    const buildAnchorFor = (rawContent) => {
+                        if (!rawContent) return '';
+                        const clean = substitute2(rawContent.replace(/\{\{\/\/[^}]*\}\}/g, '')).trim();
+                        if (clean && !clean.includes('{{') && clean.length <= 80) return clean;
+                        const lines = rawContent.split('\n').map(l => l.trim())
+                            .filter(l => l.length >= 4 && !l.startsWith('{{//'));
+                        const subLines = lines.map(substitute2).filter(l => !l.includes('{{'));
+                        const longest = subLines.sort((a, b) => b.length - a.length)[0] || '';
+                        if (longest.length > 60) {
+                            const mid = Math.floor(longest.length / 2) - 25;
+                            return longest.slice(Math.max(0, mid), Math.max(0, mid) + 50);
+                        }
+                        return longest;
+                    };
+
+                    for (const cat of presetRelCats) {
+                        const isAfter = cat.position.startsWith('preset_after_');
+                        const identifier = cat.position.replace(/^preset_(after|before)_/, '');
+                        const p = presetPrompts.find(pp => pp.identifier === identifier);
+                        if (!p) {
+                            console.warn('[CI] 카테고리용 프리셋 프롬프트를 못 찾음:', cat.name, '| id:', identifier);
+                            continue;
+                        }
+                        const pAnchor = buildAnchorFor(p.content);
+                        if (!pAnchor) {
+                            console.warn('[CI] 카테고리 기준 앵커 생성 실패:', cat.name, '(대상:', p.name, ')');
+                            continue;
+                        }
+                        const targetIdx = body.messages.findIndex(m =>
+                            typeof m.content === 'string' && m.content.includes(pAnchor)
+                        );
+                        if (targetIdx < 0) {
+                            console.warn('[CI] 카테고리 삽입 대상을 메시지 배열에서 못 찾음:', cat.name, '(대상:', p.name, ') anchor:', pAnchor.slice(0, 30));
+                            continue;
+                        }
+                        const insertAt = isAfter ? targetIdx + 1 : targetIdx;
+                        body.messages.splice(insertAt, 0, { role: 'system', content: cat.content });
+                        console.log('[CI] 카테고리 삽입 ✓', cat.name, isAfter ? '→' : '←', p.name, '(index', insertAt, ')');
+                    }
+                    options = { ...options, body: JSON.stringify(body) };
                 }
             } catch (_) { /* JSON parse 실패 = 바이너리 등 무시 */ }
         }
