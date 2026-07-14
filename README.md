@@ -1,67 +1,67 @@
 # CardInject
 
-A SillyTavern extension that uses AI to analyze your character card and automatically inject categorized content into the right places in the prompt.
+AI로 캐릭터 카드를 분석해서, 프롬프트의 알맞은 위치에 자동으로 주입해주는 SillyTavern 확장이야.
 
 ---
 
-## What it does
+## 뭘 해주는 확장이야?
 
-CardInject reads your character's card (description, personality, scenario, example messages, system prompt, post-history instructions), sends it to your currently connected AI for analysis, and breaks it down into logical categories — each injected into a different position in the prompt so the AI always has the right context at the right time.
-
----
-
-## Installation
-
-1. In SillyTavern, go to **Extensions → Install extension**
-2. Paste the repository URL
-3. Click Install
+CardInject는 캐릭터 카드(설명, 성격, 시나리오, 예시 대화, 시스템 프롬프트, post-history instructions)를 읽어서 현재 연결된 AI에게 분석을 맡기고, 그 내용을 논리적인 카테고리로 나눠줘. 각 카테고리는 프롬프트의 서로 다른 위치에 주입돼서, AI가 항상 적절한 시점에 적절한 정보를 받을 수 있게 해줘.
 
 ---
 
-## Usage
+## 설치
 
-1. Open a character chat
-2. Go to **Extensions → CardInject**, or find it in the extensions wand menu
-3. Click **AI로 캐시트 분석하기** (Analyze with AI)
-4. Wait for analysis to complete — a list of categories will appear
-5. Adjust positions or toggle categories as needed
-6. Click **주입 적용** (Apply injections)
-
-Injections are re-applied automatically on every generation. You don't need to click Apply again unless you change settings.
+1. SillyTavern에서 **Extensions → Install extension** 이동
+2. 저장소 URL 붙여넣기
+3. Install 클릭
 
 ---
 
-## Injection positions
+## 사용법
 
-| Position | Where it lands |
+1. 캐릭터 채팅 열기
+2. **Extensions → CardInject** 이동, 또는 확장 완드 메뉴에서 찾기
+3. **AI로 캐시트 분석하기** 버튼 클릭
+4. 분석 끝날 때까지 대기 — 카테고리 목록이 뜸
+5. 필요하면 위치 조정하거나 카테고리 켜고 끄기
+6. **주입 적용** 버튼 클릭
+
+주입은 생성할 때마다 자동으로 다시 적용돼. 설정을 바꾸지 않는 이상 매번 다시 누를 필요 없어.
+
+---
+
+## 주입 위치
+
+| 위치 | 어디에 들어가나 |
 |---|---|
-| 🔝 System top | Above everything — before the main system prompt |
-| 💬 Above recent messages (depth 2) | Inside chat history, just above the last 2 messages |
-| 📝 Author's Note | Merged directly into the Author's Note text |
-| 🎛️ Before/after a preset prompt | Right next to a specific prompt from your currently loaded Chat Completion preset — pick one from the dropdown |
+| 🔝 시스템 최상단 | 모든 것보다 위 — 메인 시스템 프롬프트보다도 앞 |
+| 💬 최근 메시지 위 (depth 2) | 채팅 기록 내부, 마지막 2개 메시지 바로 위 |
+| 📝 작가노트 | 작가노트 텍스트에 직접 합쳐짐 |
+| 🎛️ 특정 프리셋 프롬프트 앞/뒤 | 현재 불러온 Chat Completion 프리셋의 특정 프롬프트 바로 옆 — 드롭다운에서 선택 |
 
-The preset prompt list is pulled automatically from your active preset. If you don't see any options there, you're likely not on a Chat Completion / OpenAI-compatible API, or the preset has no custom prompts.
-
----
-
-## Notes
-
-- **Character-specific**: each character has its own independent set of categories. Switching characters automatically switches the active injections.
-- **Author's Note position**: if your Author's Note is empty, there's nothing for CardInject to anchor onto, so it falls back to inserting at the position your Author's Note *would* occupy — counted by your Author's Note depth setting (default 4), based on actual chat messages only. Add any text to your Author's Note for a guaranteed exact match instead of the fallback.
-- During analysis, the AI briefly sends a message — this is normal and gets cleaned up automatically. Do not cancel during this step.
-- Connection profiles (if available) can be switched from the extension panel.
-- Analyzed content automatically uses `{{char}}`/`{{user}}` macros instead of hardcoded names, so it stays accurate across swipes, edits, or if you rename the character later.
-- Because Author's Note and preset-prompt positions are inserted right before the request is sent (not through SillyTavern's own prompt-building step), they will **not** show up in SillyTavern's built-in prompt preview. This is expected — the content is still sent to the AI normally.
+프리셋 프롬프트 목록은 현재 활성화된 프리셋에서 자동으로 불러와. 목록에 아무것도 안 뜨면 Chat Completion / OpenAI 호환 API를 안 쓰고 있거나, 프리셋에 커스텀 프롬프트가 없는 경우일 수 있어.
 
 ---
 
-## Requirements
+## 참고사항
 
-- SillyTavern (any recent build)
-- An active AI connection
+- **캐릭터별 독립 저장**: 캐릭터마다 카테고리 목록이 따로 저장돼. 캐릭터를 전환하면 주입도 자동으로 그 캐릭터 것으로 바뀜.
+- **작가노트 위치**: 작가노트가 비어있으면 CardInject가 정확한 위치를 못 찾아서, 작가노트 depth 설정값(기본 4)을 기준으로 실제 채팅 메시지만 세서 "작가노트가 있었다면 있었을 자리"에 근사 삽입해. 정확히 맞추고 싶으면 작가노트에 텍스트를 조금이라도 넣어두면 돼.
+- 분석 중에는 AI가 잠깐 메시지를 보내는데, 이건 정상이고 끝나면 자동으로 정리돼. 이 과정에서 취소하지 마.
+- 연결 프로필이 있으면 확장 패널에서 바로 전환할 수 있어.
+- 분석된 내용은 캐릭터 이름을 그대로 쓰는 대신 `{{char}}`/`{{user}}` 매크로를 자동으로 사용해서, 스와이프하거나 캐릭터 이름을 나중에 바꿔도 정확하게 유지돼.
+- 작가노트랑 프리셋 프롬프트 위치는 SillyTavern 자체 프롬프트 조립 단계를 거치지 않고 전송 직전에 삽입되는 방식이라, SillyTavern 기본 프롬프트 미리보기에는 **뜨지 않아**. 정상 동작이고, 실제로는 AI한테 정상적으로 전달돼.
 
 ---
 
-## Author
+## 요구사항
+
+- SillyTavern (최신 빌드 권장)
+- 활성화된 AI 연결
+
+---
+
+## 제작자
 
 혜담
