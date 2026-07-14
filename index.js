@@ -551,19 +551,9 @@ ${parts.join('\n\n')}
 }
 
 // ── Toast 알림 (ST toastr와 완전히 독립된 자체 UI) ──────────────────────────────
-function toast(type, msg) {
-    const el = document.createElement('div');
-    el.className = `ci-own-toast ci-toast-${type === 'success' || type === 'error' || type === 'warning' ? type : 'info'}`;
-    el.textContent = msg;
-    document.documentElement.appendChild(el);
-    requestAnimationFrame(() => el.classList.add('ci-toast-show'));
-
-    const duration = type === 'error' ? 5000 : 3000;
-    setTimeout(() => {
-        el.classList.remove('ci-toast-show');
-        setTimeout(() => el.remove(), 250);
-    }, duration);
-}
+// 토스트 알림 비활성화 — 모달 내 상태 메시지(setStatus, 초록 글씨)로 충분해서
+// 별도 팝업 알림은 안 씀. 호출부 코드는 그대로 둬도 되게 빈 함수로 유지.
+function toast(_type, _msg) {}
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
