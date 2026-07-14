@@ -126,7 +126,7 @@ let _api = null;
 async function getApi() {
     if (_api) return _api;
     _api = {};
-    for (const p of ['../../../extensions.js', '../../../../script.js']) {
+    for (const p of ['../../../extensions.js', '../../../../script.js', '../../../openai.js']) {
         try { Object.assign(_api, await import(p)); }
         catch (e) { console.warn('[CI] import 실패:', p, e.message); }
     }
