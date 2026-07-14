@@ -38,15 +38,20 @@ Injections are re-applied automatically on every generation. You don't need to c
 | 🔝 System top | Above everything — before the main system prompt |
 | 💬 Above recent messages (depth 2) | Inside chat history, just above the last 2 messages |
 | 📝 Author's Note | Merged directly into the Author's Note text |
+| 🎛️ Before/after a preset prompt | Right next to a specific prompt from your currently loaded Chat Completion preset — pick one from the dropdown |
+
+The preset prompt list is pulled automatically from your active preset. If you don't see any options there, you're likely not on a Chat Completion / OpenAI-compatible API, or the preset has no custom prompts.
 
 ---
 
 ## Notes
 
 - **Character-specific**: each character has its own independent set of categories. Switching characters automatically switches the active injections.
-- **Author's Note position** requires an Author's Note to be set in the chat. If none is found, it falls back to a depth-based approximation.
+- **Author's Note position**: if your Author's Note is empty, there's nothing for CardInject to anchor onto, so it falls back to inserting at the position your Author's Note *would* occupy — counted by your Author's Note depth setting (default 4), based on actual chat messages only. Add any text to your Author's Note for a guaranteed exact match instead of the fallback.
 - During analysis, the AI briefly sends a message — this is normal and gets cleaned up automatically. Do not cancel during this step.
 - Connection profiles (if available) can be switched from the extension panel.
+- Analyzed content automatically uses `{{char}}`/`{{user}}` macros instead of hardcoded names, so it stays accurate across swipes, edits, or if you rename the character later.
+- Because Author's Note and preset-prompt positions are inserted right before the request is sent (not through SillyTavern's own prompt-building step), they will **not** show up in SillyTavern's built-in prompt preview. This is expected — the content is still sent to the AI normally.
 
 ---
 
