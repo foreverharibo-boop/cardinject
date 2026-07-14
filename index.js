@@ -526,7 +526,7 @@ OUTPUT FORMAT — respond with ONLY this JSON structure, nothing else:
     {
       "key": "unique_snake_key",
       "name": "Category Name (same language as source)",
-      "content": "Rewritten as a clear AI instruction. Keep original language.",
+      "content": "Rewritten as a clear AI instruction. Keep original language. Use {{char}} instead of the character's literal name.",
       "importance": "high",
       "suggested_position": "sys_top"
     }
@@ -534,6 +534,7 @@ OUTPUT FORMAT — respond with ONLY this JSON structure, nothing else:
 }
 
 FIELD VALUES:
+- content: Every sentence must make clear who it's about by using the literal macro "{{char}}" in place of the character's name "${s.name}" (e.g. write "{{char}} is stubborn" not "${s.name} is stubborn"). This lets the roleplay AI recognize whose trait it's reading. If the user/player character is referenced, use "{{user}}" the same way.
 - importance: "high" / "medium" / "low"
 - suggested_position: "sys_top" / "with_note" / "chat_recent"
   - sys_top    : Core identity, personality, rules — must always be present (system top)
@@ -546,7 +547,7 @@ CHARACTER SHEET FOR "${s.name}":
 ${parts.join('\n\n')}
 =====
 
-[REMINDER: Output ONLY the JSON object above. No roleplay. No character voice. No markdown fences.]`;
+[REMINDER: Output ONLY the JSON object above. No roleplay. No character voice. No markdown fences. Every "content" field must use the literal macro "{{char}}" instead of writing "${s.name}" directly.]`;
 }
 
 // ── Toast 알림 (ST toastr와 완전히 독립된 자체 UI) ──────────────────────────────
