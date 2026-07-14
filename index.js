@@ -551,9 +551,47 @@ ${parts.join('\n\n')}
 }
 
 // ── Toast 알림 (ST toastr와 완전히 독립된 자체 UI) ──────────────────────────────
-// 토스트 알림 비활성화 — 모달 내 상태 메시지(setStatus, 초록 글씨)로 충분해서
-// 별도 팝업 알림은 안 씀. 호출부 코드는 그대로 둬도 되게 빈 함수로 유지.
-function toast(_type, _msg) {}
+function toast(type, msg) {
+    const el = document.createElement('div');
+    el.className = `ci-own-toast ci-toast-${type === 'success' || type === 'error' || type === 'warning' ? type : 'info'}`;
+    el.textContent = msg;
+    document.documentElement.appendChild(el);
+
+    // 모바일에서 주소창/툴바가 접히거나 페이지가 스크롤된 상태일 때
+    // visualViewport 기준으로 위치를 보정 (모달과 동일한 방식)
+    const positionToast = () => {
+        const vp = window.visualViewport;
+        const ox = vp ? vp.offsetLeft : 0;
+        const oy = vp ? vp.offsetTop  : 0;
+        const vw = vp ? vp.width      : window.innerWidth;
+        el.style.left = Math.round(ox + vw / 2) + 'px';
+        el.style.top  = Math.round(oy + 10) + 'px';
+    };
+    positionToast();
+
+    let vpHandlers = [];
+    if (window.visualViewport) {
+        vpHandlers = [positionToast];
+        window.visualViewport.addEventListener('resize', positionToast);
+        window.visualViewport.addEventListener('scroll', positionToast);
+    }
+
+    requestAnimationFrame(() => el.classList.add('ci-toast-show'));
+
+    const duration = type === 'error' ? 3500 : 1800;
+    setTimeout(() => {
+        el.classList.remove('ci-toast-show');
+        setTimeout(() => {
+            el.remove();
+            if (window.visualViewport) {
+                vpHandlers.forEach(fn => {
+                    window.visualViewport.removeEventListener('resize', fn);
+                    window.visualViewport.removeEventListener('scroll', fn);
+                });
+            }
+        }, 200);
+    }, duration);
+}
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 

@@ -281,3 +281,31 @@
     transition: background .15s, color .15s; font-family: inherit;
 }
 .ci-ghost:hover { background: #f2f2f2; color: #555; }
+
+/* CI 자체 토스트 (ST의 공용 toastr는 절대 건드리지 않음 — 건드리면 ST 네이티브
+   토스트까지 다 같이 망가짐, 실제로 한 번 그런 적 있음) — 작고 눈에 덜 띄게 */
+.ci-own-toast {
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    z-index: 999999;
+    background: #111;
+    color: #fff;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: 'Segoe UI', -apple-system, 'Noto Sans KR', sans-serif;
+    max-width: 200px;
+    text-align: center;
+    box-shadow: 0 2px 10px rgba(0,0,0,.18);
+    opacity: 0;
+    transition: opacity .18s, transform .18s;
+    pointer-events: none;
+    transform: translateX(-50%);
+}
+.ci-own-toast.ci-toast-show {
+    opacity: .92;
+    transform: translateX(-50%) translateY(3px);
+}
+/* success/error/warning 구분 없이 전부 까만 배경 + 흰 글씨로 통일 */
