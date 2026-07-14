@@ -163,7 +163,13 @@
 .ci-cname {
     font-size: 13px; font-weight: 700; color: #111;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border: 1px solid transparent; background: none;
+    padding: 2px 4px; border-radius: 5px; outline: none;
+    font-family: inherit; flex: 1; min-width: 0;
+    transition: border-color .15s, background .15s;
 }
+.ci-cname:hover  { background: #f2f2f2; }
+.ci-cname:focus  { border-color: #bbb; background: #fff; white-space: normal; }
 
 .ci-chevron {
     background: none; border: none; width: 26px; height: 26px;

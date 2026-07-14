@@ -779,7 +779,7 @@ function render() {
         <div class="ci-card-top">
           <div class="ci-card-left">
             <span class="ci-imp ci-imp-${c.importance}">${impLabel(c.importance)}</span>
-            <span class="ci-cname">${esc(c.name)}</span>
+            <input class="ci-cname ci-cname-inp" type="text" data-i="${i}" value="${esc(c.name)}">
           </div>
           <div class="ci-card-right">
             <button class="ci-chevron" data-i="${i}"><i class="fa-solid fa-chevron-${c.expanded?'up':'down'}"></i></button>
@@ -824,6 +824,15 @@ function render() {
     }).join('');
 
     // 이벤트 바인딩
+    container.querySelectorAll('.ci-cname-inp').forEach(inp => {
+        inp.addEventListener('click', e => e.stopPropagation());
+        inp.addEventListener('input', async e => {
+            const i = +e.target.dataset.i;
+            s.categories[i].name = e.target.value;
+            await save();
+        });
+    });
+
     container.querySelectorAll('.ci-chevron').forEach(b => b.addEventListener('click', e => {
         const i=+e.currentTarget.dataset.i;
         s.categories[i].expanded = !s.categories[i].expanded;
