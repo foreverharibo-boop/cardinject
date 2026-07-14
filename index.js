@@ -92,8 +92,8 @@ function _presetRelOptionsHtml(currentPosition) {
     const opts = prompts.map(p => {
         const afterVal  = `preset_after_${p.identifier}`;
         const beforeVal = `preset_before_${p.identifier}`;
-        return `<option value="${esc(afterVal)}" ${currentPosition===afterVal?'selected':''}>🎛️ ${esc(p.name)} 다음</option>` +
-               `<option value="${esc(beforeVal)}" ${currentPosition===beforeVal?'selected':''}>🎛️ ${esc(p.name)} 앞</option>`;
+        return `<option value="${esc(afterVal)}" ${currentPosition===afterVal?'selected':''}>${esc(p.name)} 다음</option>` +
+               `<option value="${esc(beforeVal)}" ${currentPosition===beforeVal?'selected':''}>${esc(p.name)} 앞</option>`;
     }).join('');
     return `<optgroup label="── 프리셋 프롬프트 기준 ──">${opts}</optgroup>`;
 }
