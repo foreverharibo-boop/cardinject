@@ -993,46 +993,26 @@ function setupWand() {
 
 async function loadProfilesIntoPanel() {
     try {
-        const api = await getApi();
-        const ctx = getCtx();
-
-        let profiles = null;
-        const candidates = [
-            () => ctx?.connectionProfiles,
-            () => ctx?.connection_profiles,
-            () => api.connectionProfiles,
-            () => api.connection_profiles,
-            () => window.connection_profiles,
-            () => window.connectionProfiles,
-            () => window.power_user?.connection_profiles,
-            () => window.oai_settings?.connection_profiles,
-        ];
-
-        for (const getter of candidates) {
-            try {
-                const result = getter();
-                if (Array.isArray(result) && result.length > 0) {
-                    profiles = result;
-                    console.log('[CI] 프로필 발견:', result.length + '개');
-                    break;
-                }
-            } catch (_) {}
-        }
+        const profiles = getConnectionProfiles();
 
         if (!profiles || !profiles.length) {
-            console.log('[CI] 연결 프로필 없음 — 패널에서 숨김');
+            console.log('[CI] 연결 프로필 목록을 못 찾음 — 패널에서 숨김');
             return;
         }
+        console.log('[CI] 프로필 발견:', profiles.length + '개');
 
         const sel = document.querySelector('#ci-profile-sel');
         const wrap = document.querySelector('#ci-profile-wrap');
         if (!sel || !wrap) return;
 
-        sel.innerHTML = '<option value="">— 선택 —</option>';
+        const curEl = _findProfileSelectEl();
+        const curVal = curEl ? curEl.value : '';
+
+        sel.innerHTML = '';
         profiles.forEach(p => {
-            const name = typeof p === 'string' ? p : (p.name ?? p.id ?? String(p));
             const opt = document.createElement('option');
-            opt.value = name; opt.textContent = name;
+            opt.value = p.id; opt.textContent = p.name;
+            if (p.id === curVal) opt.selected = true;
             sel.appendChild(opt);
         });
         wrap.style.display = '';
