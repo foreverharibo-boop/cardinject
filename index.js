@@ -295,30 +295,42 @@ function getSheet(idx) {
 }
 
 // ── Connection Profiles ───────────────────────────────────────────────────────
+// ST 설정 패널의 실제 <select id="connection_profiles"> DOM을 직접 읽고 조작함.
+// (내부 데이터 구조가 ST 버전마다 달라서, 화면에 이미 렌더링된 select의
+//  option 목록을 그대로 읽는 게 가장 안정적)
 
-function getConnectionProfiles() {
-    const ctx = getCtx();
-    return ctx?.connectionProfiles
-        ?? ctx?.connection_profiles
-        ?? window.connection_profiles
-        ?? null;
+function _findProfileSelectEl() {
+    const ids = ['#connection_profiles', '#connection_profile_select', '#profile_select_dropdown'];
+    for (const id of ids) {
+        const el = document.querySelector(id);
+        if (el && el.tagName === 'SELECT') return el;
+    }
+    return null;
 }
 
-async function loadProfile(name) {
-    const api = await getApi();
-    const fn = api.loadConnectionProfile
-        ?? api.load_connection_profile
-        ?? window.loadConnectionProfile;
-    if (typeof fn === 'function') {
-        await fn(name);
-        return true;
+function getConnectionProfiles() {
+    const el = _findProfileSelectEl();
+    if (el) {
+        return Array.from(el.options).map(o => ({ id: o.value, name: o.textContent.trim() }));
     }
-    if (typeof $ !== 'undefined') {
-        const $sel = $('#connection_profile_select');
-        if ($sel.length) {
-            $sel.val(name).trigger('change');
-            return true;
-        }
+    // DOM에서 못 찾으면 내부 데이터 구조로 폴백 시도
+    const ctx = getCtx();
+    const cm = ctx?.extensionSettings?.connectionManager
+        ?? window.extension_settings?.connectionManager
+        ?? ctx?.extension_settings?.connectionManager;
+    if (cm && Array.isArray(cm.profiles)) {
+        return cm.profiles.map(p => ({ id: p.id, name: p.name }));
+    }
+    return null;
+}
+
+async function loadProfile(id) {
+    const el = _findProfileSelectEl();
+    if (el) {
+        el.value = id;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        if (typeof $ !== 'undefined') $(el).trigger('change');
+        return true;
     }
     return false;
 }
@@ -950,10 +962,11 @@ function setupPanel() {
             await applyInjections();
         });
         $(document).on('change', '#ci-profile-sel', async function () {
-            const name = $(this).val();
-            if (!name) return;
-            const ok = await loadProfile(name);
-            $('#ci-p-msg').text(ok ? `✓ "${name}" 로드됨` : '프로필 로드 API 없음');
+            const id = $(this).val();
+            const label = $(this).find('option:selected').text();
+            if (id === undefined || id === null) return;
+            const ok = await loadProfile(id);
+            $('#ci-p-msg').text(ok ? `✓ "${label}" 로드됨` : '프로필 로드 실패');
             setTimeout(() => $('#ci-p-msg').text(''), 3000);
         });
         console.log('[CI] 패널 완료 ✓');
