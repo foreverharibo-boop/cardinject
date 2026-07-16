@@ -635,7 +635,8 @@ function positionModal() {
 let backdropEl = null;
 let modalEl    = null;
 let analyzing  = false;
-let _preAnalysisProfileId = null; // 드롭다운으로 프로필을 바꾸기 직전 값 — 분석 끝나면 이걸로 복귀
+let _analysisProfileId = null;     // 드롭다운에서 고른, "분석할 때만 쓸" 프로필
+let _preAnalysisProfileId = null;  // 분석 시작 직전의 실제 프로필 — 끝나면 이걸로 복귀
 let vpListeners = [];
 
 function buildModal() {
@@ -754,9 +755,16 @@ async function doAnalyze() {
     if (!sheet) { setStatus('캐릭터를 선택해주세요.', 'err'); return; }
     if (!Object.values(sheet).join('').trim()) { setStatus('캐릭터 시트가 비어있어요.', 'err'); return; }
 
-    // 드롭다운으로 프로필을 미리 바꿔둔 상태라면(_preAnalysisProfileId), 분석+주입 끝나고 그걸로 복귀.
-    // 안 바꾼 상태라면(null) 복귀할 것도 없음 — 그대로 둠.
-    console.log('[CI][PROFILE DEBUG] 분석 시작 — 복귀 예정 값:', _preAnalysisProfileId);
+    // 분석용으로 지정해둔 프로필이 있으면, 지금(분석 시작 직전) 실제 프로필로 잠깐 전환.
+    // 지정 안 해뒀으면(null) 지금 쓰던 프로필 그대로 분석 진행.
+    const profileEl = _findProfileSelectEl();
+    _preAnalysisProfileId = profileEl ? profileEl.value : null;
+    let _switchedForAnalysis = false;
+    if (_analysisProfileId != null && profileEl && profileEl.value !== _analysisProfileId) {
+        await loadProfile(_analysisProfileId);
+        _switchedForAnalysis = true;
+        console.log('[CI][PROFILE DEBUG] 분석용 프로필로 전환:', _analysisProfileId, '(원래:', _preAnalysisProfileId, ')');
+    }
 
     analyzing = true;
     const btn = modalEl.querySelector('#ci-analyze');
@@ -800,16 +808,11 @@ async function doAnalyze() {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> AI로 캐시트 분석하기';
 
-        // 드롭다운으로 프로필을 미리 바꿔뒀던 경우에만 원래 값으로 복귀
-        const nowEl = _findProfileSelectEl();
-        console.log('[CI][PROFILE DEBUG] 분석 종료 시점 — 현재 값:', nowEl?.value, '| 복귀 예정 값:', _preAnalysisProfileId);
-        if (_preAnalysisProfileId != null && nowEl && nowEl.value !== _preAnalysisProfileId) {
+        // 분석용 프로필로 전환했었던 경우에만 원래 값으로 복귀
+        if (_switchedForAnalysis && _preAnalysisProfileId != null) {
             await loadProfile(_preAnalysisProfileId);
             console.log('[CI] 분석 후 원래 연결 프로필로 복귀:', _preAnalysisProfileId);
-        } else {
-            console.log('[CI][PROFILE DEBUG] 복귀 스킵됨 (드롭다운으로 바꾼 적 없거나, 이미 같은 값)');
         }
-        _preAnalysisProfileId = null; // 다음 분석을 위해 초기화
     }
 }
 
@@ -967,7 +970,7 @@ function setupPanel() {
       <button id="ci-p-apply" class="menu_button menu_button_icon" style="flex:1"><i class="fa-solid fa-check"></i> 주입 적용</button>
     </div>
     <div id="ci-profile-wrap" style="display:none;padding:4px 0 0">
-      <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">연결 프로필</div>
+      <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">분석용 프로필 (분석할 때만 잠깐 전환됨)</div>
       <select id="ci-profile-sel" style="width:100%;padding:5px 8px;font-size:12px;border:1px solid #ddd;border-radius:6px;background:#fff;box-sizing:border-box">
         <option value="">— 선택 —</option>
       </select>
@@ -979,26 +982,18 @@ function setupPanel() {
         $('#ci-p-apply').on('click', async () => {
             await applyInjections();
         });
-        // change 이벤트는 값이 이미 바뀐 '다음'에 발생하므로, 포커스(클릭) 시점에
-        // 미리 진짜 원본 값을 data 속성에 저장해둠
-        $(document).on('focus mousedown', '#ci-profile-sel', function () {
-            this.dataset.prevValue = this.value;
-        });
-        $(document).on('change', '#ci-profile-sel', async function () {
+        // 드롭다운에서 골라도 여기선 실제 ST 연결을 바로 바꾸지 않음.
+        // "분석용으로 이 프로필을 쓰겠다"는 선택만 저장해뒀다가,
+        // doAnalyze() 안에서 분석 시작 직전에만 잠깐 전환하고 끝나면 바로 되돌림.
+        $(document).on('change', '#ci-profile-sel', function () {
             const id = $(this).val();
             const label = $(this).find('option:selected').text();
             if (id === undefined || id === null) return;
-
-            // 이미 다른 프로필로 전환해둔 상태가 아니라면, focus 시점에 저장해둔
-            // 값을 "원래 프로필"로 기억. (연속으로 여러 번 바꿔도 최초 값만 유지)
-            if (_preAnalysisProfileId === null) {
-                _preAnalysisProfileId = this.dataset.prevValue ?? null;
-                console.log('[CI][PROFILE DEBUG] 드롭다운으로 전환 — 복귀용으로 기억한 원래 값:', _preAnalysisProfileId);
-            }
-
-            const ok = await loadProfile(id);
-            $('#ci-p-msg').text(ok ? `✓ "${label}" 로드됨` : '프로필 로드 실패');
-            setTimeout(() => $('#ci-p-msg').text(''), 3000);
+            _analysisProfileId = id;
+            ensureGlobalSettings().analysisProfileId = id;
+            save();
+            $('#ci-p-msg').text(`✓ 분석용 프로필: "${label}" (분석할 때만 잠깐 전환됨)`);
+            setTimeout(() => $('#ci-p-msg').text(''), 3500);
         });
         console.log('[CI] 패널 완료 ✓');
     } catch (e) {
@@ -1036,8 +1031,13 @@ async function loadProfilesIntoPanel() {
         const wrap = document.querySelector('#ci-profile-wrap');
         if (!sel || !wrap) return;
 
+        // 저장된 "분석용 프로필" 값을 전역 변수에 복원 (없으면 null 유지)
+        if (_analysisProfileId === null) {
+            const saved = ensureGlobalSettings().analysisProfileId;
+            if (saved) _analysisProfileId = saved;
+        }
         const curEl = _findProfileSelectEl();
-        const curVal = curEl ? curEl.value : '';
+        const curVal = _analysisProfileId ?? (curEl ? curEl.value : '');
 
         sel.innerHTML = '';
         profiles.forEach(p => {
