@@ -1077,8 +1077,14 @@ jQuery(() => {
 
             const { eventSource, event_types } = api;
             if (eventSource && event_types) {
+                let _lastSwitchCharId = _getCurrentCharId();
                 const onCharSwitch = () => {
                     const curId = _getCurrentCharId();
+                    // CHAT_CHANGED가 스와이프/메시지 수신 등에도 자주 발동되는 ST 빌드 대응 —
+                    // 실제로 캐릭터가 바뀐 게 아니면 아무 것도 안 함(토스트도 안 뜸)
+                    if (curId === _lastSwitchCharId) return;
+                    _lastSwitchCharId = curId;
+
                     const g = ensureGlobalSettings();
                     if (curId != null) {
                         g.selectedCharIdx = curId;
@@ -1100,7 +1106,14 @@ jQuery(() => {
 
                     clearInjections();
                     const s = ensureSettings();
-                    if (s.categories.length) applyInjections();
+                    if (s.categories.length) {
+                        // 캐릭터 전환은 자동 백그라운드 동작이라 토스트 없이 조용히 주입
+                        const fn = _findSetPrompt();
+                        if (fn) {
+                            _doInject(fn);
+                            _applyNoteInjection(s.categories.filter(c => c.enabled && c.content?.trim()));
+                        }
+                    }
 
                     const charName = getAllChars()[curId]?.name || curId;
                     console.log('[CI] 캐릭터 전환:', charName);
@@ -1143,41 +1156,7 @@ jQuery(() => {
                         if (evt !== 'message_sent' && evt !== event_types.MESSAGE_SENT) break;
                     } catch (_) {}
                 }
-
-                let _lastAutoCharId = null;
-                setInterval(() => {
-                    try {
-                        const curId = _getCurrentCharId();
-                        if (curId != null && curId !== _lastAutoCharId) {
-                            _lastAutoCharId = curId;
-                            const g = ensureGlobalSettings();
-                            g.selectedCharIdx = curId;
-                            if (modalEl && modalEl.style.display !== 'none') {
-                                populateCharSel();
-                                render();
-                                const s = ensureSettings();
-                                const pill = modalEl.querySelector('#ci-pill');
-                                if (pill) {
-                                    pill.textContent = `${s.categories.length}개`;
-                                    pill.style.display = s.categories.length ? '' : 'none';
-                                }
-                            }
-                            const s = ensureSettings();
-                            if (s.categories.length) {
-                                const fn2 = _findSetPrompt();
-                                if (fn2) _doInject(fn2);
-                            }
-                        }
-                    } catch (_) {}
-
-                    const fn = _findSetPrompt();
-                    if (!fn) return;
-                    const cats = ensureSettings().categories;
-                    if (!cats.length) return;
-                    _doInject(fn);
-                    _applyNoteInjection();
-                }, 1500);
-                console.log('[CI] interval 백업 주입 + 캐릭터 자동감지 시작');
+                console.log('[CI] 메시지 전송 시점 훅으로만 주입 (interval 백업 제거)');
             }
 
             console.log('[CI] 완전 로드 ✓');
