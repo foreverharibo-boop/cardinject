@@ -326,10 +326,12 @@ function getConnectionProfiles() {
 
 async function loadProfile(id) {
     const el = _findProfileSelectEl();
+    console.log('[CI][PROFILE DEBUG] loadProfile 호출 — 대상 id:', id, '| select 찾음:', !!el, '| 현재 값:', el?.value, '| 옵션 개수:', el?.options?.length);
     if (el) {
         el.value = id;
         el.dispatchEvent(new Event('change', { bubbles: true }));
         if (typeof $ !== 'undefined') $(el).trigger('change');
+        console.log('[CI][PROFILE DEBUG] 변경 시도 후 값:', el.value, '(요청한 값이랑 같으면 select 자체는 바뀐 것)');
         return true;
     }
     return false;
@@ -633,6 +635,7 @@ function positionModal() {
 let backdropEl = null;
 let modalEl    = null;
 let analyzing  = false;
+let _preAnalysisProfileId = null; // 드롭다운으로 프로필을 바꾸기 직전 값 — 분석 끝나면 이걸로 복귀
 let vpListeners = [];
 
 function buildModal() {
@@ -751,9 +754,9 @@ async function doAnalyze() {
     if (!sheet) { setStatus('캐릭터를 선택해주세요.', 'err'); return; }
     if (!Object.values(sheet).join('').trim()) { setStatus('캐릭터 시트가 비어있어요.', 'err'); return; }
 
-    // 분석 시작 전 현재 연결 프로필을 기억해뒀다가, 분석+주입이 끝나면 되돌림
-    const profileEl = _findProfileSelectEl();
-    const originalProfileId = profileEl ? profileEl.value : null;
+    // 드롭다운으로 프로필을 미리 바꿔둔 상태라면(_preAnalysisProfileId), 분석+주입 끝나고 그걸로 복귀.
+    // 안 바꾼 상태라면(null) 복귀할 것도 없음 — 그대로 둠.
+    console.log('[CI][PROFILE DEBUG] 분석 시작 — 복귀 예정 값:', _preAnalysisProfileId);
 
     analyzing = true;
     const btn = modalEl.querySelector('#ci-analyze');
@@ -797,14 +800,16 @@ async function doAnalyze() {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> AI로 캐시트 분석하기';
 
-        // 분석 중 프로필이 바뀌어있으면(분석용 프로필을 따로 골랐던 경우) 원래대로 복귀
-        if (originalProfileId != null) {
-            const nowEl = _findProfileSelectEl();
-            if (nowEl && nowEl.value !== originalProfileId) {
-                await loadProfile(originalProfileId);
-                console.log('[CI] 분석 후 원래 연결 프로필로 복귀:', originalProfileId);
-            }
+        // 드롭다운으로 프로필을 미리 바꿔뒀던 경우에만 원래 값으로 복귀
+        const nowEl = _findProfileSelectEl();
+        console.log('[CI][PROFILE DEBUG] 분석 종료 시점 — 현재 값:', nowEl?.value, '| 복귀 예정 값:', _preAnalysisProfileId);
+        if (_preAnalysisProfileId != null && nowEl && nowEl.value !== _preAnalysisProfileId) {
+            await loadProfile(_preAnalysisProfileId);
+            console.log('[CI] 분석 후 원래 연결 프로필로 복귀:', _preAnalysisProfileId);
+        } else {
+            console.log('[CI][PROFILE DEBUG] 복귀 스킵됨 (드롭다운으로 바꾼 적 없거나, 이미 같은 값)');
         }
+        _preAnalysisProfileId = null; // 다음 분석을 위해 초기화
     }
 }
 
@@ -974,10 +979,23 @@ function setupPanel() {
         $('#ci-p-apply').on('click', async () => {
             await applyInjections();
         });
+        // change 이벤트는 값이 이미 바뀐 '다음'에 발생하므로, 포커스(클릭) 시점에
+        // 미리 진짜 원본 값을 data 속성에 저장해둠
+        $(document).on('focus mousedown', '#ci-profile-sel', function () {
+            this.dataset.prevValue = this.value;
+        });
         $(document).on('change', '#ci-profile-sel', async function () {
             const id = $(this).val();
             const label = $(this).find('option:selected').text();
             if (id === undefined || id === null) return;
+
+            // 이미 다른 프로필로 전환해둔 상태가 아니라면, focus 시점에 저장해둔
+            // 값을 "원래 프로필"로 기억. (연속으로 여러 번 바꿔도 최초 값만 유지)
+            if (_preAnalysisProfileId === null) {
+                _preAnalysisProfileId = this.dataset.prevValue ?? null;
+                console.log('[CI][PROFILE DEBUG] 드롭다운으로 전환 — 복귀용으로 기억한 원래 값:', _preAnalysisProfileId);
+            }
+
             const ok = await loadProfile(id);
             $('#ci-p-msg').text(ok ? `✓ "${label}" 로드됨` : '프로필 로드 실패');
             setTimeout(() => $('#ci-p-msg').text(''), 3000);
