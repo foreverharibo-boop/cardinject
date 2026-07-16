@@ -751,6 +751,10 @@ async function doAnalyze() {
     if (!sheet) { setStatus('캐릭터를 선택해주세요.', 'err'); return; }
     if (!Object.values(sheet).join('').trim()) { setStatus('캐릭터 시트가 비어있어요.', 'err'); return; }
 
+    // 분석 시작 전 현재 연결 프로필을 기억해뒀다가, 분석+주입이 끝나면 되돌림
+    const profileEl = _findProfileSelectEl();
+    const originalProfileId = profileEl ? profileEl.value : null;
+
     analyzing = true;
     const btn = modalEl.querySelector('#ci-analyze');
     btn.disabled = true;
@@ -792,6 +796,15 @@ async function doAnalyze() {
         analyzing = false;
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> AI로 캐시트 분석하기';
+
+        // 분석 중 프로필이 바뀌어있으면(분석용 프로필을 따로 골랐던 경우) 원래대로 복귀
+        if (originalProfileId != null) {
+            const nowEl = _findProfileSelectEl();
+            if (nowEl && nowEl.value !== originalProfileId) {
+                await loadProfile(originalProfileId);
+                console.log('[CI] 분석 후 원래 연결 프로필로 복귀:', originalProfileId);
+            }
+        }
     }
 }
 
