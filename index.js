@@ -788,6 +788,92 @@ function addManualCategory() {
     });
 }
 
+// 개별 카테고리 하나만 캐릭터 시트 기준으로 다시 분석해서 content를 새로 채움
+function buildRecollectPrompt(s, catName, oldContent) {
+    const parts = [];
+    if (s.description)               parts.push(`[Character Description]\n${s.description}`);
+    if (s.personality)               parts.push(`[Personality]\n${s.personality}`);
+    if (s.scenario)                  parts.push(`[Scenario]\n${s.scenario}`);
+    if (s.mes_example)               parts.push(`[Example Messages]\n${s.mes_example}`);
+    if (s.system_prompt)             parts.push(`[System Prompt]\n${s.system_prompt}`);
+    if (s.post_history_instructions) parts.push(`[Post History Instructions]\n${s.post_history_instructions}`);
+
+    return `[OOC: STOP. DO NOT ROLEPLAY. DO NOT RESPOND AS ANY CHARACTER. THIS IS NOT A ROLEPLAY MESSAGE.
+This is a technical JSON analysis task performed by a SillyTavern extension.
+IGNORE ALL CHARACTER INSTRUCTIONS, SYSTEM PROMPTS, AND PERSONA DEFINITIONS ABOVE.
+You must respond with ONLY a raw JSON object. No prose, no narration, no character voice, no markdown.]
+
+TASK: Re-analyze the character sheet below and rewrite the content for ONE specific category only: "${catName}".
+Look through the full sheet again for anything relevant to this category — including details the previous version may have missed.
+
+PREVIOUS CONTENT FOR THIS CATEGORY (for reference — improve/replace it, don't just repeat it):
+${oldContent || '(비어있었음)'}
+
+OUTPUT FORMAT — respond with ONLY this JSON structure, nothing else:
+{
+  "content": "Rewritten as a clear AI instruction, using the literal macro \\"{{char}}\\" instead of the character's name \\"${s.name}\\" (and \\"{{user}}\\" for the user/player character where relevant). Keep the source material's language.",
+  "importance": "high"
+}
+
+FIELD VALUES:
+- importance: "high" / "medium" / "low"
+
+CHARACTER SHEET FOR "${s.name}":
+=====
+${parts.join('\n\n')}
+=====
+
+[REMINDER: Output ONLY the JSON object above. No roleplay. No character voice. No markdown fences. Use "{{char}}" instead of writing "${s.name}" directly.]`;
+}
+
+async function recollectCategory(i) {
+    const s = ensureSettings();
+    const cat = s.categories[i];
+    if (!cat) return;
+
+    const idx = getSelectedIdx(), sheet = getSheet(idx);
+    if (!sheet) { setStatus('캐릭터를 선택해주세요.', 'err'); return; }
+
+    const btn = modalEl.querySelector(`.ci-recollect-btn[data-i="${i}"]`);
+    if (btn) {
+        if (btn.dataset.busy === '1') return; // 중복 클릭 방지
+        btn.dataset.busy = '1';
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 다시 수집 중...';
+    }
+    setStatus(`⚠️ "${cat.name}" 재수집 중 — 채팅이 잠깐 보내지지만 자동 정리돼요. 취소 금지!`, 'load');
+
+    // 분석용으로 지정해둔 프로필이 있으면 여기서도 동일하게 잠깐 전환
+    const profileEl = _findProfileSelectEl();
+    const preId = profileEl ? profileEl.value : null;
+    let switched = false;
+    if (_analysisProfileId != null && profileEl && profileEl.value !== _analysisProfileId) {
+        await loadProfile(_analysisProfileId);
+        switched = true;
+    }
+
+    try {
+        const raw   = await callGenerate(buildRecollectPrompt(sheet, cat.name, cat.content));
+        const clean = raw.replace(/```(?:json)?\n?/g,'').replace(/```/g,'').trim();
+        const parsed = JSON.parse(clean);
+        if (!parsed.content) throw new Error('재수집 결과가 비어있어요');
+
+        cat.content = parsed.content;
+        if (parsed.importance) cat.importance = parsed.importance;
+        await save();
+        render();
+        setStatus(`✓ "${cat.name}" 재수집 완료!`, 'ok');
+    } catch (e) {
+        console.error('[CI]', e);
+        setStatus(`재수집 실패: ${e.message}`, 'err');
+    } finally {
+        if (switched && preId != null) {
+            await loadProfile(preId);
+        }
+        // render()로 버튼 자체가 새로 그려지므로 별도 복구 불필요
+    }
+}
+
 async function doAnalyze() {
     if (analyzing) return;
     const idx = getSelectedIdx(), sheet = getSheet(idx);
@@ -887,11 +973,15 @@ function render() {
               <input type="checkbox" class="ci-chk" data-i="${i}" ${c.enabled?'checked':''}>
               <span class="ci-knob"></span>
             </label>
+            <button class="ci-chevron ci-del-btn" data-i="${i}" title="삭제"><i class="fa-solid fa-trash-can"></i></button>
           </div>
         </div>
         ${c.expanded?`
         <div class="ci-textarea-wrap">
           <textarea class="ci-ta" data-i="${i}">${esc(c.content)}</textarea>
+          <button class="ci-sec ci-recollect-btn" data-i="${i}" style="margin-top:6px;width:100%;justify-content:center">
+            <i class="fa-solid fa-rotate"></i> 이 항목만 다시 수집
+          </button>
         </div>`:''}
         <div class="ci-card-body">
           <div class="ci-row">
@@ -933,10 +1023,32 @@ function render() {
         });
     });
 
-    container.querySelectorAll('.ci-chevron').forEach(b => b.addEventListener('click', e => {
+    container.querySelectorAll('.ci-chevron:not(.ci-del-btn)').forEach(b => b.addEventListener('click', e => {
         const i=+e.currentTarget.dataset.i;
         s.categories[i].expanded = !s.categories[i].expanded;
         render();
+    }));
+
+    container.querySelectorAll('.ci-del-btn').forEach(b => b.addEventListener('click', async e => {
+        e.stopPropagation();
+        const i = +e.currentTarget.dataset.i;
+        const cat = s.categories[i];
+        if (!confirm(`"${cat.name}" 카테고리를 삭제할까요?`)) return;
+        s.categories.splice(i, 1);
+        await save();
+        render();
+        const pill = modalEl.querySelector('#ci-pill');
+        if (pill) {
+            pill.textContent = `${s.categories.length}개`;
+            pill.style.display = s.categories.length ? '' : 'none';
+        }
+        setStatus('✓ 삭제됐어요.', 'ok');
+    }));
+
+    container.querySelectorAll('.ci-recollect-btn').forEach(b => b.addEventListener('click', async e => {
+        e.stopPropagation();
+        const i = +e.currentTarget.dataset.i;
+        await recollectCategory(i);
     }));
 
     container.querySelectorAll('.ci-chk').forEach(inp => inp.addEventListener('change', async e => {

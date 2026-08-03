@@ -178,6 +178,7 @@
     transition: background .15s, color .15s;
 }
 .ci-chevron:hover { background: #eee; color: #333; }
+.ci-del-btn:hover { background: #fff0f0; color: #c00; }
 
 /* Toggle */
 .ci-tog { position: relative; width: 36px; height: 20px; display: inline-block; cursor: pointer; }
