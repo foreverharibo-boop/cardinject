@@ -666,6 +666,9 @@ function buildModal() {
     <button class="ci-analyze-btn" id="ci-analyze">
       <i class="fa-solid fa-wand-magic-sparkles"></i> AI로 캐시트 분석하기
     </button>
+    <button class="ci-sec ci-add-btn" id="ci-add-cat" style="width:100%;justify-content:center;margin-top:8px">
+      <i class="fa-solid fa-plus"></i> 직접 칸 추가
+    </button>
     <p class="ci-status" id="ci-status"></p>
   </div>
 
@@ -684,6 +687,7 @@ function buildModal() {
 
     modalEl.querySelector('#ci-x').onclick       = closeModal;
     modalEl.querySelector('#ci-analyze').onclick  = doAnalyze;
+    modalEl.querySelector('#ci-add-cat').onclick  = addManualCategory;
     modalEl.querySelector('#ci-apply').onclick    = async () => { await applyInjections(); setStatus('✓ 주입 적용 완료!', 'ok'); };
     modalEl.querySelector('#ci-save').onclick     = async () => { await save(); setStatus('✓ 저장됐어요.', 'ok'); toast('info', '설정이 저장됐어요.'); };
     modalEl.querySelector('#ci-reset').onclick    = doReset;
@@ -748,6 +752,41 @@ function closeModal() {
 }
 
 // ── Analysis ──────────────────────────────────────────────────────────────────
+
+// 사용자가 AI 분석 없이 직접 채워넣는 빈 카테고리 카드 생성
+function addManualCategory() {
+    const s = ensureSettings();
+    const newCat = {
+        key:         'manual_' + Math.random().toString(36).slice(2),
+        name:        '새 카테고리',
+        content:     '',
+        importance:  'medium',
+        position:    'sys_top',
+        customDepth: POSITIONS.sys_top.depth,
+        enabled:     true,
+        expanded:    true, // 바로 입력할 수 있게 펼쳐진 상태로 생성
+    };
+    s.categories.push(newCat);
+    save();
+    render();
+
+    const pill = modalEl.querySelector('#ci-pill');
+    if (pill) {
+        pill.textContent = `${s.categories.length}개`;
+        pill.style.display = '';
+    }
+
+    // 새로 만든 카드가 화면에 보이게 스크롤 + 이름 입력창에 바로 포커스
+    requestAnimationFrame(() => {
+        const cards = modalEl.querySelectorAll('.ci-card');
+        const lastCard = cards[cards.length - 1];
+        if (lastCard) {
+            lastCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const nameInp = lastCard.querySelector('.ci-cname-inp');
+            if (nameInp) { nameInp.focus(); nameInp.select(); }
+        }
+    });
+}
 
 async function doAnalyze() {
     if (analyzing) return;
