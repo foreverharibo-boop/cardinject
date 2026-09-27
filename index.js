@@ -139,74 +139,64 @@ function getCtx() {
     return null;
 }
 
-// 캐시트 분석용 생성 호출.
-// ST의 generateQuietPrompt를 정상적으로 사용하되(가장 단순하고 표준적인 방법),
-// 이 ST 빌드에서는 quiet 생성이 채팅창에 살짝 찍혀버리는 경우가 있어서
-// 호출 전후로 채팅 길이를 비교해 늘어났으면 그 메시지를 바로 잘라내서 정리함.
+// 캐시트 분석용 백그라운드 생성 호출.
+// 선택한 연결 프로필에 직접 요청하며, 본채팅이나 현재 연결은 건드리지 않음.
 async function callGenerate(prompt) {
-    const api = await getApi();
-    const fn = api.generateQuietPrompt ?? window.generateQuietPrompt ?? getCtx()?.generateQuietPrompt;
-    if (typeof fn !== 'function') throw new Error('ST 생성 함수를 찾을 수 없어요');
+    await getApi();
+    const service = getCtx()?.ConnectionManagerRequestService;
+    if (!service || typeof service.sendRequest !== 'function') {
+        throw new Error('ST 백그라운드 요청 서비스를 찾을 수 없어요. SillyTavern을 업데이트해주세요.');
+    }
 
-    // 채팅 배열 참조 — 여러 경로 시도
-    let chatArr = null;
-    try { chatArr = window.chat; } catch (_) {}
-    if (!Array.isArray(chatArr)) try { chatArr = getCtx()?.chat; } catch (_) {}
-    if (!Array.isArray(chatArr)) try { chatArr = window.SillyTavern?.getContext()?.chat; } catch (_) {}
-    const beforeLen = Array.isArray(chatArr) ? chatArr.length : -1;
-    const beforeDomCount = $('#chat .mes').length;
-    console.log('[CI] 분석 시작 — 채팅 배열:', beforeLen, '(', chatArr ? 'found' : 'NOT FOUND', ') | DOM:', beforeDomCount);
+    const profileId = _analysisProfileId ?? ensureGlobalSettings().connectionProfileId;
+    if (!profileId) throw new Error('확장 탭에서 연결 프로필을 먼저 선택해주세요.');
+
+    const profile = typeof service.getProfile === 'function' ? service.getProfile(profileId) : null;
+    if (typeof service.isProfileSupported === 'function' && profile && !service.isProfileSupported(profile)) {
+        throw new Error('선택한 연결 프로필은 백그라운드 생성을 지원하지 않아요.');
+    }
 
     globalThis._ciAnalyzing = true;
-    let result;
     try {
-        result = await fn(prompt, false, true);
+        const result = await service.sendRequest(profileId, prompt, 4096, {
+            stream: false,
+            extractData: true,
+            includePreset: false,
+            includeInstruct: false,
+        });
+        const text = typeof result === 'string' ? result : result?.content;
+        if (typeof text !== 'string' || !text.trim()) throw new Error('백그라운드 생성 결과가 비어있어요.');
+        return text;
     } finally {
         globalThis._ciAnalyzing = false;
     }
-
-    // ── 채팅 정리 — 즉시 + 500ms 후 이중 시도 (비동기 DOM 업데이트 대응) ──
-    const doCleanup = () => {
-        let cleaned = false;
-        // 1) 데이터 배열
-        let arr = null;
-            try { arr = window.chat; } catch (_) {}
-            if (!Array.isArray(arr)) try { arr = getCtx()?.chat; } catch (_) {}
-            if (!Array.isArray(arr)) try { arr = window.SillyTavern?.getContext()?.chat; } catch (_) {}
-        if (Array.isArray(arr) && beforeLen >= 0 && arr.length > beforeLen) {
-            const added = arr.length - beforeLen;
-            arr.splice(beforeLen, added);
-            console.log('[CI] 채팅 배열에서', added, '개 제거 (현재:', arr.length, ')');
-            cleaned = true;
-        }
-        // 2) DOM 메시지 버블
-        const curDom = $('#chat .mes').length;
-        if (curDom > beforeDomCount) {
-            const toRemove = curDom - beforeDomCount;
-            $('#chat .mes').slice(-toRemove).remove();
-            console.log('[CI] DOM에서', toRemove, '개 제거 (현재:', curDom - toRemove, ')');
-            cleaned = true;
-        }
-        // 3) 저장
-        if (cleaned) {
-            const saveFn = window.saveChatConditional ?? window.saveChat;
-            if (typeof saveFn === 'function') { try { saveFn(); } catch (_) {} }
-        }
-        return cleaned;
-    };
-
-    try {
-        doCleanup();
-        setTimeout(doCleanup, 500);
-        setTimeout(doCleanup, 1500);
-    } catch (e) {
-        console.warn('[CI] 채팅 정리 실패:', e.message);
-    }
-
-    return result;
 }
 
 // ── Settings (캐릭터별 저장) ──────────────────────────────────────────────────
+
+// 원문 주입과는 분리된 화면 확인용 Google 한국어 번역.
+async function translateToKorean(text) {
+    if (!text?.trim()) throw new Error('번역할 내용이 없어요.');
+
+    let translateFn = typeof globalThis.translate === 'function' ? globalThis.translate : null;
+    if (!translateFn) {
+        try {
+            const module = await import('../../translate/index.js');
+            translateFn = module.translate;
+        } catch (e) {
+            console.warn('[CI] 번역 모듈 import 실패:', e.message);
+        }
+    }
+    if (typeof translateFn !== 'function') {
+        throw new Error('SillyTavern Google 번역 기능을 찾을 수 없어요.');
+    }
+
+    const translated = await translateFn(text, 'ko', 'google');
+    if (typeof translated !== 'string' || !translated.trim()) {
+        throw new Error('Google 번역 결과가 비어있어요.');
+    }
+    return translated.trim();
+}
 
 function ensureGlobalSettings() {
     const ctx = getCtx();
@@ -309,6 +299,14 @@ function _findProfileSelectEl() {
 }
 
 function getConnectionProfiles() {
+    const service = getCtx()?.ConnectionManagerRequestService;
+    if (service && typeof service.getSupportedProfiles === 'function') {
+        const profiles = service.getSupportedProfiles();
+        if (Array.isArray(profiles) && profiles.length) {
+            return profiles.map(p => ({ id: p.id, name: p.name || p.id }));
+        }
+    }
+
     const el = _findProfileSelectEl();
     if (el) {
         return Array.from(el.options).map(o => ({ id: o.value, name: o.textContent.trim() }));
@@ -322,19 +320,6 @@ function getConnectionProfiles() {
         return cm.profiles.map(p => ({ id: p.id, name: p.name }));
     }
     return null;
-}
-
-async function loadProfile(id) {
-    const el = _findProfileSelectEl();
-    console.log('[CI][PROFILE DEBUG] loadProfile 호출 — 대상 id:', id, '| select 찾음:', !!el, '| 현재 값:', el?.value, '| 옵션 개수:', el?.options?.length);
-    if (el) {
-        el.value = id;
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        if (typeof $ !== 'undefined') $(el).trigger('change');
-        console.log('[CI][PROFILE DEBUG] 변경 시도 후 값:', el.value, '(요청한 값이랑 같으면 select 자체는 바뀐 것)');
-        return true;
-    }
-    return false;
 }
 
 // ── Injection ─────────────────────────────────────────────────────────────────
@@ -361,6 +346,7 @@ function _doInject(fn) {
         const id = `${EXT_KEY}_${cat.key || i}`;
         const pos = _resolvePosition(cat.position);
         g.activeKeys.push(id);
+        if (cat.enabled) count++;
 
         // ciInterceptor 담당(IN_CHAT)과 fetch hook 담당(PT_NOTE)은
         // 여기서 기존 등록값만 지우고 건너뜀
@@ -374,7 +360,6 @@ function _doInject(fn) {
             const depth = pos.depth ?? 0;
             try { fn(id, cat.content, pos.type, depth, false, 0); } catch(e) { console.warn('[CI] fn 오류:', e); }
             _directWrite(id, cat.content, pos.type, depth);
-            count++;
         } else {
             try { fn(id, '', PT.IN_PROMPT, 0, false, 0); } catch(_) {}
             _directWrite(id, '', PT.IN_PROMPT, 0);
@@ -497,7 +482,7 @@ async function applyInjections() {
     _applyNoteInjection(enabled);
     await save();
 
-    console.log(`[CI] 수동 주입 완료: ${count}개 (+ 채팅/작가노트 위치는 매 생성마다 자동)`);
+    console.log(`[CI] 수동 주입 적용: 활성 카테고리 ${count}개`);
     toast('success', `✓ ${count}개 카테고리 주입 완료!`);
 }
 
@@ -635,8 +620,7 @@ function positionModal() {
 let backdropEl = null;
 let modalEl    = null;
 let analyzing  = false;
-let _analysisProfileId = null;     // 드롭다운에서 고른, "분석할 때만 쓸" 프로필
-let _preAnalysisProfileId = null;  // 분석 시작 직전의 실제 프로필 — 끝나면 이걸로 복귀
+let _analysisProfileId = null;     // 백그라운드 생성에 사용할 연결 프로필
 let vpListeners = [];
 
 function buildModal() {
@@ -841,16 +825,7 @@ async function recollectCategory(i) {
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 다시 수집 중...';
     }
-    setStatus(`⚠️ "${cat.name}" 재수집 중 — 채팅이 잠깐 보내지지만 자동 정리돼요. 취소 금지!`, 'load');
-
-    // 분석용으로 지정해둔 프로필이 있으면 여기서도 동일하게 잠깐 전환
-    const profileEl = _findProfileSelectEl();
-    const preId = profileEl ? profileEl.value : null;
-    let switched = false;
-    if (_analysisProfileId != null && profileEl && profileEl.value !== _analysisProfileId) {
-        await loadProfile(_analysisProfileId);
-        switched = true;
-    }
+    setStatus(`"${cat.name}" 재수집 중...`, 'load');
 
     try {
         const raw   = await callGenerate(buildRecollectPrompt(sheet, cat.name, cat.content));
@@ -859,6 +834,9 @@ async function recollectCategory(i) {
         if (!parsed.content) throw new Error('재수집 결과가 비어있어요');
 
         cat.content = parsed.content;
+        delete cat.translation;
+        delete cat.translationSource;
+        delete cat.translationVisible;
         if (parsed.importance) cat.importance = parsed.importance;
         await save();
         render();
@@ -867,9 +845,6 @@ async function recollectCategory(i) {
         console.error('[CI]', e);
         setStatus(`재수집 실패: ${e.message}`, 'err');
     } finally {
-        if (switched && preId != null) {
-            await loadProfile(preId);
-        }
         // render()로 버튼 자체가 새로 그려지므로 별도 복구 불필요
     }
 }
@@ -880,23 +855,11 @@ async function doAnalyze() {
     if (!sheet) { setStatus('캐릭터를 선택해주세요.', 'err'); return; }
     if (!Object.values(sheet).join('').trim()) { setStatus('캐릭터 시트가 비어있어요.', 'err'); return; }
 
-    // 분석용으로 지정해둔 프로필이 있으면, 지금(분석 시작 직전) 실제 프로필로 잠깐 전환.
-    // 지정 안 해뒀으면(null) 지금 쓰던 프로필 그대로 분석 진행.
-    const profileEl = _findProfileSelectEl();
-    _preAnalysisProfileId = profileEl ? profileEl.value : null;
-    let _switchedForAnalysis = false;
-    if (_analysisProfileId != null && profileEl && profileEl.value !== _analysisProfileId) {
-        await loadProfile(_analysisProfileId);
-        _switchedForAnalysis = true;
-        console.log('[CI][PROFILE DEBUG] 분석용 프로필로 전환:', _analysisProfileId, '(원래:', _preAnalysisProfileId, ')');
-    }
-
     analyzing = true;
     const btn = modalEl.querySelector('#ci-analyze');
     btn.disabled = true;
     btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 분석 중...';
-    setStatus('⚠️ 채팅이 잠깐 보내지지만 완료 후 자동 정리돼요. 취소 금지!', 'load');
-    toast('warning', '분석 중: 채팅이 잠깐 보내집니다. 취소하지 마세요!');
+    setStatus('캐릭터 시트 분석 중...', 'load');
 
     try {
         const raw   = await callGenerate(buildPrompt(sheet));
@@ -933,11 +896,6 @@ async function doAnalyze() {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> AI로 캐시트 분석하기';
 
-        // 분석용 프로필로 전환했었던 경우에만 원래 값으로 복귀
-        if (_switchedForAnalysis && _preAnalysisProfileId != null) {
-            await loadProfile(_preAnalysisProfileId);
-            console.log('[CI] 분석 후 원래 연결 프로필로 복귀:', _preAnalysisProfileId);
-        }
     }
 }
 
@@ -960,6 +918,11 @@ function render() {
     container.innerHTML = cats.map((c, i) => {
         const pos = _resolvePosition(c.position);
         const showDepth = pos.type === PT.IN_CHAT;
+        const hasTranslation = Boolean(c.translation && c.translationSource === c.content);
+        const translationVisible = hasTranslation && c.translationVisible === true;
+        const translationLabel = hasTranslation
+            ? (translationVisible ? '번역본 숨기기' : '번역본 보기')
+            : 'Google 번역 보기';
         return `
       <div class="ci-card ${c.enabled?'':'ci-off'}" data-i="${i}">
         <div class="ci-card-top">
@@ -979,6 +942,13 @@ function render() {
         ${c.expanded?`
         <div class="ci-textarea-wrap">
           <textarea class="ci-ta" data-i="${i}">${esc(c.content)}</textarea>
+          <button class="ci-sec ci-translate-btn" data-i="${i}" style="margin-top:6px;width:100%;justify-content:center">
+            <i class="fa-solid fa-language"></i> ${translationLabel}
+          </button>
+          <div class="ci-translation" data-i="${i}" ${translationVisible ? '' : 'hidden'}>
+            <div class="ci-translation-label">Google 번역 · 한국어</div>
+            <div class="ci-translation-text">${hasTranslation ? esc(c.translation) : ''}</div>
+          </div>
           <button class="ci-sec ci-recollect-btn" data-i="${i}" style="margin-top:6px;width:100%;justify-content:center">
             <i class="fa-solid fa-rotate"></i> 이 항목만 다시 수집
           </button>
@@ -1051,6 +1021,45 @@ function render() {
         await recollectCategory(i);
     }));
 
+    container.querySelectorAll('.ci-translate-btn').forEach(b => b.addEventListener('click', async e => {
+        e.stopPropagation();
+        const button = e.currentTarget;
+        const i = +button.dataset.i;
+        const cat = s.categories[i];
+        const card = button.closest('.ci-card');
+        const box = card?.querySelector('.ci-translation');
+        const textEl = box?.querySelector('.ci-translation-text');
+        const hasCached = Boolean(cat.translation && cat.translationSource === cat.content);
+
+        if (hasCached) {
+            cat.translationVisible = !cat.translationVisible;
+            if (box) box.hidden = !cat.translationVisible;
+            button.innerHTML = `<i class="fa-solid fa-language"></i> ${cat.translationVisible ? '번역본 숨기기' : '번역본 보기'}`;
+            await save();
+            return;
+        }
+
+        const originalHtml = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Google 번역 중...';
+        try {
+            const translated = await translateToKorean(cat.content);
+            cat.translation = translated;
+            cat.translationSource = cat.content;
+            cat.translationVisible = true;
+            if (textEl) textEl.textContent = translated;
+            if (box) box.hidden = false;
+            button.innerHTML = '<i class="fa-solid fa-language"></i> 번역본 숨기기';
+            await save();
+        } catch (err) {
+            console.error('[CI] Google 번역 실패:', err);
+            setStatus(`번역 실패: ${err.message}`, 'err');
+            button.innerHTML = originalHtml;
+        } finally {
+            button.disabled = false;
+        }
+    }));
+
     container.querySelectorAll('.ci-chk').forEach(inp => inp.addEventListener('change', async e => {
         const i=+e.target.dataset.i;
         s.categories[i].enabled = e.target.checked;
@@ -1083,7 +1092,20 @@ function render() {
 
     container.querySelectorAll('.ci-ta').forEach(ta => ta.addEventListener('input', async e => {
         const i=+e.target.dataset.i;
-        s.categories[i].content = e.target.value;
+        const cat = s.categories[i];
+        cat.content = e.target.value;
+        if (cat.translationSource !== cat.content) {
+            delete cat.translation;
+            delete cat.translationSource;
+            delete cat.translationVisible;
+            const card = e.target.closest('.ci-card');
+            const box = card?.querySelector('.ci-translation');
+            const textEl = box?.querySelector('.ci-translation-text');
+            const button = card?.querySelector('.ci-translate-btn');
+            if (box) box.hidden = true;
+            if (textEl) textEl.textContent = '';
+            if (button) button.innerHTML = '<i class="fa-solid fa-language"></i> Google 번역 보기';
+        }
         await save();
     }));
 }
@@ -1116,35 +1138,21 @@ function setupPanel() {
     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
   </div>
   <div class="inline-drawer-content">
-    <div style="padding:8px 0;display:flex;gap:8px">
-      <button id="ci-p-open"  class="menu_button menu_button_icon" style="flex:1"><i class="fa-solid fa-syringe"></i> 열기</button>
-      <button id="ci-p-apply" class="menu_button menu_button_icon" style="flex:1"><i class="fa-solid fa-check"></i> 주입 적용</button>
-    </div>
-    <div id="ci-profile-wrap" style="display:none;padding:4px 0 0">
-      <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">분석용 프로필 (분석할 때만 잠깐 전환됨)</div>
+    <div id="ci-profile-wrap" style="display:none;padding:8px 0">
+      <div style="font-size:11px;color:#888;margin-bottom:4px;font-weight:600">연결 프로필</div>
       <select id="ci-profile-sel" style="width:100%;padding:5px 8px;font-size:12px;border:1px solid #ddd;border-radius:6px;background:#fff;box-sizing:border-box">
         <option value="">— 선택 —</option>
       </select>
     </div>
-    <div id="ci-p-msg" style="font-size:12px;text-align:center;min-height:16px;padding:4px 0 6px;color:#666"></div>
   </div>
 </div>`);
-        $('#ci-p-open').on('click', openModal);
-        $('#ci-p-apply').on('click', async () => {
-            await applyInjections();
-        });
-        // 드롭다운에서 골라도 여기선 실제 ST 연결을 바로 바꾸지 않음.
-        // "분석용으로 이 프로필을 쓰겠다"는 선택만 저장해뒀다가,
-        // doAnalyze() 안에서 분석 시작 직전에만 잠깐 전환하고 끝나면 바로 되돌림.
+        // 본채팅 연결은 바꾸지 않고, 이 프로필로 백그라운드 요청만 보냄.
         $(document).on('change', '#ci-profile-sel', function () {
             const id = $(this).val();
-            const label = $(this).find('option:selected').text();
             if (id === undefined || id === null) return;
             _analysisProfileId = id;
-            ensureGlobalSettings().analysisProfileId = id;
+            ensureGlobalSettings().connectionProfileId = id;
             save();
-            $('#ci-p-msg').text(`✓ 분석용 프로필: "${label}" (분석할 때만 잠깐 전환됨)`);
-            setTimeout(() => $('#ci-p-msg').text(''), 3500);
         });
         console.log('[CI] 패널 완료 ✓');
     } catch (e) {
@@ -1182,13 +1190,15 @@ async function loadProfilesIntoPanel() {
         const wrap = document.querySelector('#ci-profile-wrap');
         if (!sel || !wrap) return;
 
-        // 저장된 "분석용 프로필" 값을 전역 변수에 복원 (없으면 null 유지)
+        // 기존 analysisProfileId 저장값도 자동 이전해 선택을 유지함.
         if (_analysisProfileId === null) {
-            const saved = ensureGlobalSettings().analysisProfileId;
+            const globalSettings = ensureGlobalSettings();
+            const saved = globalSettings.connectionProfileId ?? globalSettings.analysisProfileId;
             if (saved) _analysisProfileId = saved;
         }
-        const curEl = _findProfileSelectEl();
-        const curVal = _analysisProfileId ?? (curEl ? curEl.value : '');
+        const curVal = profiles.some(p => p.id === _analysisProfileId)
+            ? _analysisProfileId
+            : profiles[0].id;
 
         sel.innerHTML = '';
         profiles.forEach(p => {
@@ -1197,6 +1207,9 @@ async function loadProfilesIntoPanel() {
             if (p.id === curVal) opt.selected = true;
             sel.appendChild(opt);
         });
+        _analysisProfileId = curVal;
+        ensureGlobalSettings().connectionProfileId = curVal;
+        save();
         wrap.style.display = '';
         console.log('[CI] 프로필 패널 업데이트 완료');
     } catch (e) {
@@ -1216,7 +1229,8 @@ jQuery(() => {
     (async () => {
         try {
             const api = await getApi();
-            console.log('[CI] generateQuietPrompt:', typeof api.generateQuietPrompt === 'function' ? '✓' : `✗ window:${typeof window.generateQuietPrompt}`);
+            const requestService = getCtx()?.ConnectionManagerRequestService;
+            console.log('[CI] 백그라운드 요청 서비스:', typeof requestService?.sendRequest === 'function' ? '✓' : '✗');
             const hasSet = typeof api.setExtensionPrompt === 'function';
             const hasWinSet = typeof window.setExtensionPrompt === 'function';
             console.log('[CI] setExtensionPrompt - api:', hasSet ? '✓' : '✗', '| window:', hasWinSet ? '✓' : '✗');

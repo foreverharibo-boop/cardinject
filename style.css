@@ -210,6 +210,29 @@
 }
 .ci-ta:focus { border-color: #888; background: #fff; }
 
+/* Google 번역 미리보기 — 원문 주입 내용과 완전히 분리 */
+.ci-translation {
+    margin-top: 6px;
+    padding: 10px 11px;
+    background: #f5f7f9;
+    border: 1px solid #dfe4e8;
+    border-radius: 8px;
+}
+.ci-translation[hidden] { display: none !important; }
+.ci-translation-label {
+    margin-bottom: 6px;
+    color: #777;
+    font-size: 10.5px;
+    font-weight: 700;
+}
+.ci-translation-text {
+    color: #222;
+    font-size: 12.5px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 /* Card body */
 .ci-card-body {
     padding: 10px 13px 12px;
