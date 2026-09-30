@@ -1,4 +1,5 @@
 // CardInject
+import { applyCategoryInjections, chatEvidence, mainRequestDecision, requestFingerprint, resolveContent } from './injection-runtime.js';
 
 const EXT_KEY = 'cardinject';
 // ST 실제 extension_prompt_types 값 (script.js/extensions.js 기준):
@@ -8,7 +9,7 @@ const EXT_KEY = 'cardinject';
 const PT = { IN_PROMPT: 0, IN_CHAT: 1, BEFORE_PROMPT: 2 };
 
 // fetch hook 전용 타입
-const PT_NOTE = 12;    // 작가노트 텍스트 자체에 직접 이어붙임 (위치 100% 일치 보장)
+const PT_NOTE = 12;    // 작가노트 본문 뒤에 삽입, 위치가 없으면 설정된 depth로 대체
 const PT_PRESET_REL = 13; // 특정 프리셋 프롬프트 바로 앞/뒤 (동적, POSITIONS 테이블 밖에서 처리)
 
 // ⚠️ ST 프롬프트 실제 순서 (중요):
@@ -19,7 +20,7 @@ const POSITIONS = {
     // ── setExtensionPrompt 처리 (진짜 최상단, 검증됨) ────────────────────────────
     sys_top:      { label: '🔝 시스템 최상단(모든 것보다 위)',             type: PT.BEFORE_PROMPT, depth: 0 },
 
-    // ── ciInterceptor 처리 (채팅 배열에 직접 삽입, 검증됨) ──────────────────────
+    // ── setExtensionPrompt 처리 + 전송 직전 누락 보충 ─────────────────────────
     chat_recent:  { label: '💬 최근 메시지 위 (depth 2)',                 type: PT.IN_CHAT, depth: 2      },
 
     // ── fetch hook 처리 ───────────────────────────────────────────────────────────
@@ -54,7 +55,7 @@ function _getPresetPrompts() {
         ?? getCtx()?.oai_settings
         ?? window.SillyTavern?.getContext?.()?.oaiSettings;
     if (!oai || !Array.isArray(oai.prompts)) {
-        console.warn('[CI] oai_settings를 못 찾음 — 프리셋 프롬프트 목록 불러오기 실패. oai:', oai);
+        console.warn('[CI] 프리셋 프롬프트 목록 불러오기 실패 — oai_settings/prompts를 찾지 못함.');
         return [];
     }
 
@@ -78,10 +79,10 @@ function _getPresetPrompts() {
             identifier: p.identifier,
             name: p.name || p.identifier,
             content: p.content || '',
+            role: p.role || 'system',
             enabledInPreset: entry.enabled !== false,
         });
     }
-    console.log('[CI][PRESET DEBUG] oai 발견:', !!oai, '| prompts 총:', oai.prompts?.length, '| prompt_order 개수:', oai.prompt_order?.length, '| charId:', charId, '| orderList 길이:', orderList.length, '| 결과:', result.length);
     return result;
 }
 
@@ -130,6 +131,8 @@ async function getApi() {
         try { Object.assign(_api, await import(p)); }
         catch (e) { console.warn('[CI] import 실패:', p, e.message); }
     }
+    _installPromptCapture();
+    _registerInjectionRequestHooks();
     return _api;
 }
 
@@ -325,9 +328,8 @@ function getConnectionProfiles() {
 // ── Injection ─────────────────────────────────────────────────────────────────
 
 // 실제 주입 로직
-// ★ IN_CHAT(chat_recent, depth 지정) 위치는 ciInterceptor(generate_interceptor)가 담당.
-// ★ PT_NOTE(with_note) 위치는 fetch hook이 담당.
-// 여기서는 BEFORE_PROMPT(시스템 최상단)만 setExtensionPrompt로 처리.
+// 최상단과 최근 메시지 위치는 표준 setExtensionPrompt로 등록.
+// 작가노트와 프리셋 상대 위치는 요청 조립 후 처리하며, 최종 전송에서 모두 재확인.
 function _doInject(fn) {
     const g = ensureGlobalSettings();
 
@@ -348,16 +350,16 @@ function _doInject(fn) {
         g.activeKeys.push(id);
         if (cat.enabled) count++;
 
-        // ciInterceptor 담당(IN_CHAT)과 fetch hook 담당(PT_NOTE)은
+        // 요청 본문에서 처리하는 작가노트와 프리셋 상대 위치는
         // 여기서 기존 등록값만 지우고 건너뜀
-        if (pos.type === PT.IN_CHAT || pos.type === PT_NOTE) {
+        if (pos.type === PT_NOTE || pos.type === PT_PRESET_REL) {
             try { fn(id, '', PT.IN_PROMPT, 0, false, 0); } catch(_) {}
             _directWrite(id, '', PT.IN_PROMPT, 0);
             return;
         }
 
         if (cat.enabled && cat.content?.trim()) {
-            const depth = pos.depth ?? 0;
+            const depth = pos.type === PT.IN_CHAT ? Math.max(0, Number(cat.customDepth ?? pos.depth) || 0) : pos.depth ?? 0;
             try { fn(id, cat.content, pos.type, depth, false, 0); } catch(e) { console.warn('[CI] fn 오류:', e); }
             _directWrite(id, cat.content, pos.type, depth);
         } else {
@@ -368,43 +370,21 @@ function _doInject(fn) {
     return count;
 }
 
-// ── Generate Interceptor: IN_CHAT(chat_recent) 담당 ─────────────────────────
+// ── Generate Interceptor: 표준 프롬프트 등록과 본채팅 증거 수집 ──────────────
 // manifest.json의 generate_interceptor로 등록됨.
 globalThis.ciInterceptor = async function (chat, contextSize, abort, type) {
     try {
-        if (type === 'quiet') return;
-
-        const cats = ensureSettings().categories.filter(c => c.enabled && c.content?.trim());
-
-        // 작가노트 합치기 캐시 갱신 (fetch hook이 실제 삽입 담당)
-        _applyNoteInjection(cats);
-
-        // PT_NOTE는 type이 PT.IN_CHAT이 아니므로 아래 필터에서 자동 제외됨
-        const inChat = cats.filter(c => _resolvePosition(c.position)?.type === PT.IN_CHAT);
-        if (!inChat.length) return;
-
-        // depth가 클수록(오래된 메시지 쪽) 먼저 끼워 넣어야,
-        // depth가 작은(최하단) 항목이 나중에 삽입되면서 실제로 더 아래에 위치하게 됨
-        const getDepth = (cat) => cat.customDepth ?? _resolvePosition(cat.position)?.depth ?? 0;
-        const sorted = [...inChat].sort((a, b) => getDepth(b) - getDepth(a));
-
-        for (const cat of sorted) {
-            const depth = getDepth(cat);
-            const entry = {
-                is_user: false,
-                name: 'System',
-                send_date: Date.now(),
-                mes: cat.content,
-                extra: {},
-            };
-            if (depth <= 0) {
-                chat.push(entry);
-            } else {
-                const idx = Math.max(0, chat.length - depth);
-                chat.splice(idx, 0, entry);
-            }
-        }
-        console.log('[CI] interceptor 주입:', inChat.length + '개 (', sorted.map(c => c.name).join(', '), ')');
+        _installFetchHook();
+        _installPromptCapture();
+        const normalized = String(type ?? '').trim().toLowerCase() || 'normal';
+        if (!['normal', 'regenerate', 'swipe', 'continue', 'quiet'].includes(normalized)) return;
+        _ciChatSnapshot = chatEvidence(chat);
+        // quiet can be either a gated main reply or an auxiliary Generate.
+        // Observe here, then prove the actual sender at SETTINGS_READY/fetch.
+        if (normalized === 'quiet') return;
+        const fn = _findSetPrompt();
+        if (fn) _doInject(fn);
+        _applyNoteInjection(_ciEnabledCategories());
     } catch (e) {
         console.error('[CI] interceptor 오류:', e);
     }
@@ -972,7 +952,7 @@ function render() {
           ${c.position === 'with_note' ? `
           <div class="ci-row">
             <span class="ci-lbl">방식</span>
-            <span class="ci-hint">작가노트 텍스트에 직접 합쳐짐 — 위치 100% 일치, 조정 불필요</span>
+            <span class="ci-hint">작가노트 본문 뒤에 합쳐짐 — 본문을 찾지 못하면 작가노트 depth 설정에 삽입</span>
           </div>`:''}
           ${_resolvePosition(c.position).type === PT_PRESET_REL ? `
           <div class="ci-row">
@@ -1304,6 +1284,8 @@ jQuery(() => {
                 ].filter(v => v != null && typeof v === 'string');
 
                 const injHook = () => {
+                    _installFetchHook();
+                    _installPromptCapture();
                     const fn = _findSetPrompt();
                     if (!fn) return;
                     const cats = ensureSettings().categories;
@@ -1331,190 +1313,151 @@ jQuery(() => {
     })();
 });
 
-// ── Fetch Hook 설치 — with_note 전용 ────────────────────────────────────────
-// with_note(작가노트 합치기)만 처리. AI API 요청을 가로채서
-// 최종 메시지 배열의 작가노트 텍스트 바로 뒤에 카테고리 내용을 이어붙임.
+// ── Main-request verification + request-only injection ─────────────────────
+let _ciChatSnapshot = [];
+const _ciConfirmedRequests = new Set();
+const _ciPreparedPrompts = new Map();
+const _ciResolvedCategories = new Map();
+let _ciRequestHooksRegistered = false;
 
-function _installFetchHook() {
-    if (window._ciHooked) return;
-    window._ciHooked = true;
+function _ciEnabledCategories() {
+    return (ensureSettings().categories ?? []).filter(cat => cat.enabled && cat.content?.trim());
+}
 
-    const origFetch = window.fetch.bind(window);
-    window.fetch = async function(url, options, ...rest) {
-        // 캐시트 분석 요청 중엔 절대 건드리지 않음
-        if (globalThis._ciAnalyzing) {
-            return origFetch(url, options, ...rest);
+function _ciNames() {
+    const ctx = getCtx();
+    return { charName: ctx?.name2 || getAllChars()[getSelectedIdx()]?.name || '',
+        userName: ctx?.name1 || window.name1 || '' };
+}
+
+function _ciResetRequestState() {
+    _ciChatSnapshot = [];
+    _ciConfirmedRequests.clear();
+    _ciPreparedPrompts.clear();
+    _ciResolvedCategories.clear();
+}
+
+function _installPromptCapture() {
+    const manager = _api?.promptManager ?? getCtx()?.promptManager;
+    if (!manager || typeof manager.preparePrompt !== 'function'
+        || manager.preparePrompt.__ciPreparedCapture) return;
+    const original = manager.preparePrompt;
+    const wrapped = function (...args) {
+        const result = original.apply(this, args);
+        if (result?.identifier && typeof result.content === 'string') {
+            const key = String(result.identifier);
+            const variants = _ciPreparedPrompts.get(key) ?? new Set();
+            variants.add(result.content);
+            if (variants.size > 8) variants.delete(variants.values().next().value);
+            _ciPreparedPrompts.set(key, variants);
         }
-
-        if (options?.method?.toUpperCase() === 'POST' && typeof options?.body === 'string') {
-            try {
-                const urlStr0 = typeof url === 'string' ? url : (url?.url ?? '');
-
-                // 번역기 등 다른 확장의 API 요청 제외
-                const isNonGenUrl = /translat|tts|speech|embed|caption|vision|classif/i.test(urlStr0);
-                let isNonGenCaller = false;
-                try {
-                    const stack = new Error().stack || '';
-                    isNonGenCaller = /translator\.js|custom-request\.js|fetchTranslation/i.test(stack);
-                } catch (_) {}
-
-                if (isNonGenUrl || isNonGenCaller) {
-                    return origFetch(url, options, ...rest);
-                }
-
-                const body = JSON.parse(options.body);
-                const cats = ensureSettings().categories.filter(c => c.enabled && c.content?.trim());
-
-                // with_note: 최종 메시지 배열에서 작가노트 텍스트를 찾아 바로 뒤에 삽입
-                const noteCats = cats.filter(c => c.position === 'with_note');
-                const noteContent = noteCats.length ? noteCats.map(c => c.content).join('\n\n') : '';
-
-                if (noteContent && Array.isArray(body.messages)) {
-                    let noteText = '';
-                    try {
-                        const ctx = getCtx();
-                        const meta = ctx?.chatMetadata ?? ctx?.chat_metadata;
-                        const raw = meta?.note_prompt || '';
-                        const mi = raw.indexOf(CI_NOTE_MARKER);
-                        noteText = (mi >= 0 ? raw.slice(0, mi) : raw).trim();
-                    } catch (_) {}
-
-                    // 작가노트 앵커 생성:
-                    // {{char}}/{{user}} 매크로를 실제 이름으로 치환해서 매칭.
-                    // {{// 코멘트}} 형식 줄은 최종 요청에서 사라지므로 제외.
-                    let anchor = '';
-                    if (noteText) {
-                        const ctxN = getCtx();
-                        const charName = ctxN?.name2 || getAllChars()[getSelectedIdx()]?.name || '';
-                        const userName = ctxN?.name1 || window.name1 || '';
-                        const substitute = (s) => s
-                            .replace(/\{\{char\}\}/gi, charName)
-                            .replace(/\{\{user\}\}/gi, userName);
-
-                        const lines = noteText.split('\n')
-                            .map(l => l.trim())
-                            .filter(l => l.length >= 8 && !l.startsWith('{{//') && !l.startsWith('{{ //'));
-
-                        const substituted = lines.map(substitute).filter(l => !l.includes('{{'));
-                        const longest = substituted.sort((a, b) => b.length - a.length)[0] || '';
-
-                        if (longest.length > 60) {
-                            const mid = Math.floor(longest.length / 2) - 25;
-                            anchor = longest.slice(Math.max(0, mid), Math.max(0, mid) + 50);
-                        } else {
-                            anchor = longest;
-                        }
-                    }
-
-                    let inserted = false;
-                    if (anchor) {
-                        const anIdx = body.messages.findIndex(m =>
-                            typeof m.content === 'string' && m.content.includes(anchor)
-                        );
-                        if (anIdx >= 0) {
-                            body.messages[anIdx].content =
-                                body.messages[anIdx].content + '\n\n' + noteContent;
-                            inserted = true;
-                            console.log('[CI] fetch hook: 작가노트 텍스트 끝에 이어붙임 ✓ (index', anIdx, ', anchor:', anchor.slice(0, 30) + '...)');
-                        } else {
-                            console.warn('[CI] fetch hook: 앵커 매칭 실패. anchor:', anchor);
-                        }
-                    }
-
-                    if (!inserted) {
-                        // 앵커 매칭 실패 → note_depth 기준으로 user/assistant 메시지만
-                        // 카운트해서 위치 계산 (system 메시지가 섞여있어도 정확)
-                        let noteDepth = 4; // ST 기본값
-                        try {
-                            const meta2 = getCtx()?.chatMetadata ?? getCtx()?.chat_metadata;
-                            const d = meta2?.note_depth;
-                            // 0이면 작노 미설정으로 보고 기본값 4 유지
-                            if (typeof d === 'number' && d > 0) noteDepth = d;
-                        } catch (_) {}
-
-                        let chatCount = 0;
-                        let insertAt = 0;
-                        for (let i = body.messages.length - 1; i >= 0; i--) {
-                            const role = body.messages[i].role;
-                            if (role === 'user' || role === 'assistant') {
-                                chatCount++;
-                                if (chatCount >= noteDepth) { insertAt = i + 1; break; }
-                            }
-                        }
-                        body.messages.splice(insertAt, 0, { role: 'system', content: noteContent });
-                        console.log('[CI] fetch hook: 앵커 실패 → note_depth', noteDepth, '기준 삽입 (index', insertAt, ', chatCount', chatCount, ')');
-                    }
-
-                    options = { ...options, body: JSON.stringify(body) };
-
-                    // 진단용 로그
-                    try {
-                        const debugBody = JSON.parse(options.body);
-                        if (Array.isArray(debugBody.messages)) {
-                            console.log('[CI][DEBUG] 최종 messages 마지막 3개:',
-                                JSON.stringify(debugBody.messages.slice(-3), null, 2));
-                        }
-                    } catch (_) {}
-                }
-
-                // ── 카테고리를 특정 프리셋 프롬프트 앞/뒤에 끼워넣기 ──────────────
-                // position이 'preset_after_<id>' / 'preset_before_<id>' 형태인 카테고리들.
-                // 작가노트 앵커와 같은 방식으로 대상 프리셋 프롬프트의 메시지를 찾아서
-                // 그 옆에 새 메시지로 삽입함.
-                const presetRelCats = cats.filter(c => _resolvePosition(c.position)?.type === PT_PRESET_REL);
-                if (presetRelCats.length && Array.isArray(body.messages)) {
-                    const presetPrompts = _getPresetPrompts();
-                    const ctxN2 = getCtx();
-                    const charName2 = ctxN2?.name2 || getAllChars()[getSelectedIdx()]?.name || '';
-                    const userName2 = ctxN2?.name1 || window.name1 || '';
-                    const substitute2 = (s) => s
-                        .replace(/\{\{char\}\}/gi, charName2)
-                        .replace(/\{\{user\}\}/gi, userName2);
-
-                    const buildAnchorFor = (rawContent) => {
-                        if (!rawContent) return '';
-                        const clean = substitute2(rawContent.replace(/\{\{\/\/[^}]*\}\}/g, '')).trim();
-                        if (clean && !clean.includes('{{') && clean.length <= 80) return clean;
-                        const lines = rawContent.split('\n').map(l => l.trim())
-                            .filter(l => l.length >= 4 && !l.startsWith('{{//'));
-                        const subLines = lines.map(substitute2).filter(l => !l.includes('{{'));
-                        const longest = subLines.sort((a, b) => b.length - a.length)[0] || '';
-                        if (longest.length > 60) {
-                            const mid = Math.floor(longest.length / 2) - 25;
-                            return longest.slice(Math.max(0, mid), Math.max(0, mid) + 50);
-                        }
-                        return longest;
-                    };
-
-                    for (const cat of presetRelCats) {
-                        const isAfter = cat.position.startsWith('preset_after_');
-                        const identifier = cat.position.replace(/^preset_(after|before)_/, '');
-                        const p = presetPrompts.find(pp => pp.identifier === identifier);
-                        if (!p) {
-                            console.warn('[CI] 카테고리용 프리셋 프롬프트를 못 찾음:', cat.name, '| id:', identifier);
-                            continue;
-                        }
-                        const pAnchor = buildAnchorFor(p.content);
-                        if (!pAnchor) {
-                            console.warn('[CI] 카테고리 기준 앵커 생성 실패:', cat.name, '(대상:', p.name, ')');
-                            continue;
-                        }
-                        const targetIdx = body.messages.findIndex(m =>
-                            typeof m.content === 'string' && m.content.includes(pAnchor)
-                        );
-                        if (targetIdx < 0) {
-                            console.warn('[CI] 카테고리 삽입 대상을 메시지 배열에서 못 찾음:', cat.name, '(대상:', p.name, ') anchor:', pAnchor.slice(0, 30));
-                            continue;
-                        }
-                        const insertAt = isAfter ? targetIdx + 1 : targetIdx;
-                        body.messages.splice(insertAt, 0, { role: 'system', content: cat.content });
-                        console.log('[CI] 카테고리 삽입 ✓', cat.name, isAfter ? '→' : '←', p.name, '(index', insertAt, ')');
-                    }
-                    options = { ...options, body: JSON.stringify(body) };
-                }
-            } catch (_) { /* JSON parse 실패 = 바이너리 등 무시 */ }
-        }
-        return origFetch(url, options, ...rest);
+        return result;
     };
-    console.log('[CI] fetch hook 설치 ✓');
+    Object.defineProperty(wrapped, '__ciPreparedCapture', { value: true });
+    manager.preparePrompt = wrapped;
+}
+
+function _ciRememberRequest(body) {
+    const fingerprint = requestFingerprint(body);
+    if (!fingerprint) return;
+    _ciConfirmedRequests.add(fingerprint);
+    if (_ciConfirmedRequests.size > 8) _ciConfirmedRequests.delete(_ciConfirmedRequests.values().next().value);
+}
+
+function _ciResolvedCats(names) {
+    return _ciEnabledCategories().map((cat, index) => {
+        const cacheKey = JSON.stringify([cat.key || index, cat.content, names]);
+        if (!_ciResolvedCategories.has(cacheKey)) {
+            _ciResolvedCategories.set(cacheKey, resolveContent(cat.content, names, _api?.substituteParams));
+        }
+        return { ...cat, resolvedContent: _ciResolvedCategories.get(cacheKey) };
+    });
+}
+
+function _ciApplyOutboundRequest(body, source, stack) {
+    const ctx = getCtx(), names = _ciNames();
+    const decision = mainRequestDecision(body, stack, {
+        chat: ctx?.chat, snapshot: _ciChatSnapshot, names, confirmed: _ciConfirmedRequests,
+    });
+    if (!decision.eligible) {
+        console.debug('[CI] 전송 요청 제외', { source, type: decision.type, reason: decision.reason });
+        return null;
+    }
+    // A concurrent/hung analysis flag does not block a positively confirmed
+    // main request. Its custom-request/raw sender is independently excluded.
+    _ciRememberRequest(body);
+    const cats = _ciResolvedCats(names);
+    if (!cats.length) return null;
+    const metadata = ctx?.chatMetadata ?? ctx?.chat_metadata ?? {};
+    const report = applyCategoryInjections(body, cats, {
+        names, presets: _getPresetPrompts(), prepared: _ciPreparedPrompts,
+        noteText: _getAuthorNoteText().split(CI_NOTE_MARKER)[0],
+        noteDepth: Number.isFinite(Number(metadata.note_depth)) ? Number(metadata.note_depth) : 4,
+        substitute: _api?.substituteParams,
+    });
+    _ciRememberRequest(body);
+    if (report.missing.length) console.warn('[CI] 주입 위치 대체', report.missing);
+    if (source === 'fetch-final') {
+        console.info('[CI] 전송 직전 카테고리 검사', {
+            type: decision.type || '(없음)', requestPath: decision.requestPath,
+            mainRequestMatched: true, fallbackUsed: report.missing.length > 0,
+            expected: cats.map((cat, index) => String(cat.key || index)),
+            categories: report.categories, fallback: report.missing,
+        });
+    }
+    return report;
+}
+
+export function _registerInjectionRequestHooks() {
+    if (_ciRequestHooksRegistered) return;
+    const ctx = getCtx();
+    const source = _api?.eventSource ?? ctx?.eventSource;
+    const types = _api?.event_types ?? ctx?.eventTypes ?? ctx?.event_types;
+    if (!source || !types) return;
+    const on = (key, handler) => { if (types[key]) source.on(types[key], handler); };
+    on('GENERATION_STARTED', (_type, options = {}, dryRun = false) => {
+        if (dryRun || options?.dryRun || _type?.dryRun) return;
+        _ciResetRequestState();
+        _ciChatSnapshot = chatEvidence(getCtx()?.chat);
+        _installFetchHook();
+        _installPromptCapture();
+    });
+    on('CHAT_COMPLETION_SETTINGS_READY', payload => {
+        if (payload?.dryRun) return;
+        const stack = new Error().stack ?? '';
+        _installFetchHook();
+        _ciApplyOutboundRequest(payload, 'settings-ready', stack);
+    });
+    for (const key of ['GENERATION_ENDED', 'GENERATION_STOPPED', 'CHAT_CHANGED']) {
+        on(key, _ciResetRequestState);
+    }
+    _ciRequestHooksRegistered = true;
+}
+
+export function _installFetchHook() {
+    if (typeof window.fetch !== 'function' || window.fetch.__ciGenerationHook) return;
+    const originalFetch = window.fetch.bind(window);
+    const wrapped = async function ciGenerationFetch(url, options, ...rest) {
+        const requestInput = typeof Request !== 'undefined' && url instanceof Request;
+        const address = typeof url === 'string' ? url : String(url?.url ?? url?.href ?? '');
+        const method = String(options?.method ?? (requestInput ? url.method : '')).toUpperCase();
+        if (method === 'POST' && /\/api\/backends\/chat-completions\/generate(?:[?#]|$)/.test(address)) {
+            const stack = new Error().stack ?? '';
+            try {
+                const serialized = options?.body ?? (requestInput ? await url.clone().text() : null);
+                if (typeof serialized === 'string') {
+                    const body = JSON.parse(serialized);
+                    const report = _ciApplyOutboundRequest(body, 'fetch-final', stack);
+                    if (report?.changed) options = { ...options, body: JSON.stringify(body) };
+                }
+            } catch (error) {
+                console.warn('[CI] 전송 직전 주입 처리 실패 — 생성은 계속합니다.', error);
+            }
+        }
+        return originalFetch(url, options, ...rest);
+    };
+    Object.defineProperty(wrapped, '__ciGenerationHook', { value: true });
+    window.fetch = wrapped;
+    window._ciHooked = true;
+    console.debug('[CI] 본생성 전송 훅 연결');
 }
