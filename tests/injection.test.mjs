@@ -194,10 +194,22 @@ test('실제 fetch와 설정 이벤트에서 quiet 본생성 4위치를 주입�
         assert.doesNotMatch(JSON.stringify(requests.at(-1).body), /CI_TOP|CI_RECENT|CI_NOTE|CI_P1/);
         // Normal interceptor now uses standard system prompts, not fake assistant chat records.
         globalThis._ciAnalyzing = false;
+        const foreign = Object.freeze({ value: 'FOREIGN_PROMPT', position: 1, depth: 5, role: 0 });
+        context.extensionPrompts.foreign = foreign;
+        context.extensionSettings.cardinject.activeKeys.push('foreign');
         await globalThis.ciInterceptor(context.chat, 0, () => {}, 'normal');
         assert.deepEqual(context.chat, originalChat);
         assert.ok(promptCalls.some(args => args[0] === 'cardinject_RECENT' && args[1] === 'CI_RECENT' && args[2] === 1 && args[3] === 2 && args[5] === 0));
         assert.ok(!promptCalls.some(args => args[1] && args[2] === 13), '프리셋 전용 가상 타입을 ST에 등록하면 안 됨');
+        assert.strictEqual(context.extensionPrompts.foreign, foreign);
+        assert.ok(!promptCalls.some(args => args[0] === 'foreign'));
+        context.extensionSettings.cardinject.activeKeys.push('foreign');
+        module.onDisable();
+        assert.strictEqual(context.extensionPrompts.foreign, foreign);
+        assert.ok(!promptCalls.some(args => args[0] === 'foreign'));
+        await sendGenerationRequest(makeBody());
+        assert.doesNotMatch(JSON.stringify(requests.at(-1).body), /CI_TOP|CI_RECENT|CI_NOTE|CI_P1/);
+        assert.match(JSON.stringify(requests.at(-1).body), /OTHER_EXTENSION/);
     } finally {
         for (const [key, item] of saved) { if (item.exists) globalThis[key] = item.value; else delete globalThis[key]; }
     }

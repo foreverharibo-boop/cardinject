@@ -1,5 +1,12 @@
 // CardInject
 import { applyCategoryInjections, chatEvidence, mainRequestDecision, requestFingerprint, resolveContent } from './injection-runtime.js';
+import { hasHookOwner, markHookOwner } from './hook-chain.js';
+
+const FETCH_HOOK_OWNER = Symbol('cardinject.fetch');
+const PROMPT_CAPTURE_OWNER = Symbol('cardinject.preparePrompt');
+let _ciRuntimeActive = true;
+const _ciRequestHandlers = [];
+const _ciOwnPromptId = id => typeof id === 'string' && id.startsWith('cardinject_') && id.length > 11;
 
 const EXT_KEY = 'cardinject';
 // ST 실제 extension_prompt_types 값 (script.js/extensions.js 기준):
@@ -331,11 +338,12 @@ function getConnectionProfiles() {
 // 최상단과 최근 메시지 위치는 표준 setExtensionPrompt로 등록.
 // 작가노트와 프리셋 상대 위치는 요청 조립 후 처리하며, 최종 전송에서 모두 재확인.
 function _doInject(fn) {
+    if (!_ciRuntimeActive) return 0;
     const g = ensureGlobalSettings();
 
     // 이전에 등록했던 키들 먼저 전부 지워서 캐릭터 전환 시 주입이 남아있는 문제 방지
     if (Array.isArray(g.activeKeys)) {
-        g.activeKeys.forEach(id => {
+        g.activeKeys.filter(_ciOwnPromptId).forEach(id => {
             try { fn(id, '', PT.IN_PROMPT, 0, false, 0); } catch (_) {}
             _directWrite(id, '', PT.IN_PROMPT, 0);
         });
@@ -373,6 +381,7 @@ function _doInject(fn) {
 // ── Generate Interceptor: 표준 프롬프트 등록과 본채팅 증거 수집 ──────────────
 // manifest.json의 generate_interceptor로 등록됨.
 globalThis.ciInterceptor = async function (chat, contextSize, abort, type) {
+    if (!_ciRuntimeActive) return;
     try {
         _installFetchHook();
         _installPromptCapture();
@@ -416,6 +425,7 @@ function _findSetPrompt() {
 
 // extension_prompts 직접 접근 (module 인스턴스 우회 목적)
 function _directWrite(id, value, position, depth) {
+    if (!_ciOwnPromptId(id)) return false;
     const targets = [
         () => window.extension_prompts,
         () => getCtx()?.extensionPrompts,
@@ -471,7 +481,7 @@ async function clearInjections() {
     const fn = _findSetPrompt();
     const g = ensureGlobalSettings();
     if (fn && Array.isArray(g.activeKeys)) {
-        g.activeKeys.forEach(id => {
+        g.activeKeys.filter(_ciOwnPromptId).forEach(id => {
             try { fn(id, '', PT.IN_PROMPT, 0, false, 0); } catch (_) {}
             _directWrite(id, '', PT.IN_PROMPT, 0);
         });
@@ -1209,6 +1219,7 @@ jQuery(() => {
     (async () => {
         try {
             const api = await getApi();
+            if (!_ciRuntimeActive) return;
             const requestService = getCtx()?.ConnectionManagerRequestService;
             console.log('[CI] 백그라운드 요청 서비스:', typeof requestService?.sendRequest === 'function' ? '✓' : '✗');
             const hasSet = typeof api.setExtensionPrompt === 'function';
@@ -1224,6 +1235,7 @@ jQuery(() => {
             if (eventSource && event_types) {
                 let _lastSwitchCharId = _getCurrentCharId();
                 const onCharSwitch = () => {
+                    if (!_ciRuntimeActive) return;
                     const curId = _getCurrentCharId();
                     // CHAT_CHANGED가 스와이프/메시지 수신 등에도 자주 발동되는 ST 빌드 대응 —
                     // 실제로 캐릭터가 바뀐 게 아니면 아무 것도 안 함(토스트도 안 뜸)
@@ -1284,6 +1296,7 @@ jQuery(() => {
                 ].filter(v => v != null && typeof v === 'string');
 
                 const injHook = () => {
+                    if (!_ciRuntimeActive) return;
                     _installFetchHook();
                     _installPromptCapture();
                     const fn = _findSetPrompt();
@@ -1338,13 +1351,14 @@ function _ciResetRequestState() {
 }
 
 function _installPromptCapture() {
+    if (!_ciRuntimeActive) return;
     const manager = _api?.promptManager ?? getCtx()?.promptManager;
     if (!manager || typeof manager.preparePrompt !== 'function'
-        || manager.preparePrompt.__ciPreparedCapture) return;
+        || hasHookOwner(manager.preparePrompt, PROMPT_CAPTURE_OWNER)) return;
     const original = manager.preparePrompt;
     const wrapped = function (...args) {
         const result = original.apply(this, args);
-        if (result?.identifier && typeof result.content === 'string') {
+        if (_ciRuntimeActive && result?.identifier && typeof result.content === 'string') {
             const key = String(result.identifier);
             const variants = _ciPreparedPrompts.get(key) ?? new Set();
             variants.add(result.content);
@@ -1354,6 +1368,7 @@ function _installPromptCapture() {
         return result;
     };
     Object.defineProperty(wrapped, '__ciPreparedCapture', { value: true });
+    markHookOwner(wrapped, original, PROMPT_CAPTURE_OWNER);
     manager.preparePrompt = wrapped;
 }
 
@@ -1375,6 +1390,7 @@ function _ciResolvedCats(names) {
 }
 
 function _ciApplyOutboundRequest(body, source, stack) {
+    if (!_ciRuntimeActive) return null;
     const ctx = getCtx(), names = _ciNames();
     const decision = mainRequestDecision(body, stack, {
         chat: ctx?.chat, snapshot: _ciChatSnapshot, names, confirmed: _ciConfirmedRequests,
@@ -1409,12 +1425,17 @@ function _ciApplyOutboundRequest(body, source, stack) {
 }
 
 export function _registerInjectionRequestHooks() {
-    if (_ciRequestHooksRegistered) return;
+    if (!_ciRuntimeActive || _ciRequestHooksRegistered) return;
     const ctx = getCtx();
     const source = _api?.eventSource ?? ctx?.eventSource;
     const types = _api?.event_types ?? ctx?.eventTypes ?? ctx?.event_types;
     if (!source || !types) return;
-    const on = (key, handler) => { if (types[key]) source.on(types[key], handler); };
+    const on = (key, handler) => {
+        if (!types[key]) return;
+        const guarded = (...args) => { if (_ciRuntimeActive) return handler(...args); };
+        source.on(types[key], guarded);
+        _ciRequestHandlers.push({ source, event: types[key], handler: guarded });
+    };
     on('GENERATION_STARTED', (_type, options = {}, dryRun = false) => {
         if (dryRun || options?.dryRun || _type?.dryRun) return;
         _ciResetRequestState();
@@ -1435,9 +1456,12 @@ export function _registerInjectionRequestHooks() {
 }
 
 export function _installFetchHook() {
-    if (typeof window.fetch !== 'function' || window.fetch.__ciGenerationHook) return;
-    const originalFetch = window.fetch.bind(window);
+    if (!_ciRuntimeActive || typeof window.fetch !== 'function'
+        || hasHookOwner(window.fetch, FETCH_HOOK_OWNER)) return;
+    const previousFetch = window.fetch;
+    const originalFetch = previousFetch.bind(window);
     const wrapped = async function ciGenerationFetch(url, options, ...rest) {
+        if (!_ciRuntimeActive) return originalFetch(url, options, ...rest);
         const requestInput = typeof Request !== 'undefined' && url instanceof Request;
         const address = typeof url === 'string' ? url : String(url?.url ?? url?.href ?? '');
         const method = String(options?.method ?? (requestInput ? url.method : '')).toUpperCase();
@@ -1457,7 +1481,35 @@ export function _installFetchHook() {
         return originalFetch(url, options, ...rest);
     };
     Object.defineProperty(wrapped, '__ciGenerationHook', { value: true });
+    markHookOwner(wrapped, previousFetch, FETCH_HOOK_OWNER);
     window.fetch = wrapped;
     window._ciHooked = true;
     console.debug('[CI] 본생성 전송 훅 연결');
+}
+
+export function onEnable() {
+    _ciRuntimeActive = true;
+    _installFetchHook();
+    _installPromptCapture();
+    _registerInjectionRequestHooks();
+    const fn = _findSetPrompt();
+    if (fn) _doInject(fn);
+}
+
+export function onDisable() {
+    _ciRuntimeActive = false;
+    _ciResetRequestState();
+    for (const { source, event, handler } of _ciRequestHandlers.splice(0)) {
+        if (typeof source.removeListener === 'function') source.removeListener(event, handler);
+        else if (typeof source.off === 'function') source.off(event, handler);
+    }
+    _ciRequestHooksRegistered = false;
+    const settings = ensureGlobalSettings(), fn = _findSetPrompt();
+    for (const id of settings.activeKeys.filter(_ciOwnPromptId)) {
+        try { fn?.(id, '', PT.IN_PROMPT, 0, false, 0); } catch (_) {}
+        _directWrite(id, '', PT.IN_PROMPT, 0);
+    }
+    settings.activeKeys = [];
+    _applyNoteInjection([]);
+    // Leave the shared wrapper chain intact; inactive wrappers just forward.
 }

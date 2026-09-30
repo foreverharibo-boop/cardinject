@@ -1,13 +1,17 @@
 {
-    "display_name": "CardInject",
-    "loading_order": 999999,
-    "requires": [],
-    "optional": [],
-    "js": "index.js",
-    "css": "style.css",
-    "author": "혜담",
-    "version": "1.0.3",
-    "homePage": "",
-    "auto_update": false,
-    "generate_interceptor": "ciInterceptor"
+  "display_name": "CardInject",
+  "loading_order": 999999,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "혜담",
+  "version": "1.0.4",
+  "homePage": "",
+  "auto_update": false,
+  "generate_interceptor": "ciInterceptor",
+  "hooks": {
+    "enable": "onEnable",
+    "disable": "onDisable"
+  }
 }
