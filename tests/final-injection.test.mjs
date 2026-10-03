@@ -173,5 +173,21 @@ test('최종 옵션은 하나이고 옛 최하단은 별칭으로 호환하며 d
     const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
     assert.equal(manifest.display_name, 'CardInject');
     assert.equal(manifest.generate_interceptor, 'ciInterceptor');
-    assert.equal(manifest.version, '1.0.5');
+    assert.equal(manifest.version, '1.0.6');
+});
+
+test('다른 확장이 앞부분을 재작성해도 이미 마지막인 자기 지시문을 중복하거나 삭제하지 않는다', () => {
+    const manual = { role: 'system', content: 'FINAL' };
+    const body = { model: 'main', type: 'quiet', messages: [manual, { role: 'user', content: 'Scene' }, { role: 'system', content: 'TT_OLD' }] };
+    const cats = [finalCat('FINAL')];
+    const { receipt } = appendFinalInjection(body, cats);
+    body.messages = body.messages.filter(message => message.content !== 'TT_OLD');
+    assert.equal(detachFinalInjection(body, receipt), false);
+    const original = structuredClone(body.messages);
+    const report = appendFinalInjection(body, cats, receipt);
+    assert.equal(report.changed, false);
+    assert.equal(report.categories[0].status, 'present');
+    assert.deepEqual(body.messages, original);
+    assert.strictEqual(body.messages[0], manual);
+    assert.equal(body.messages.filter(message => message.content === 'FINAL').length, 2);
 });

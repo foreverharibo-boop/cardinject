@@ -1419,7 +1419,7 @@ function _ciApplyOutboundRequest(body, source, stack, finalReceipt) {
         substitute: _api?.substituteParams,
     });
     if (finalPass) {
-        const final = appendFinalInjection(body, cats.filter(cat => _resolvePosition(cat.position).type === PT_FINAL));
+        const final = appendFinalInjection(body, cats.filter(cat => _resolvePosition(cat.position).type === PT_FINAL), detached ? null : finalReceipt);
         report.changed ||= detached || final.changed;
         report.categories.push(...final.categories);
         report.finalReceipt = final.receipt;
@@ -1427,7 +1427,7 @@ function _ciApplyOutboundRequest(body, source, stack, finalReceipt) {
             _ciFinalReceipts.set(requestFingerprint(body), final.receipt);
             if (_ciFinalReceipts.size > 8) _ciFinalReceipts.delete(_ciFinalReceipts.keys().next().value);
         }
-        if (finalReceipt && !detached) console.warn('[CI] 최종 주입 소유 확인 실패 — 기존 내용은 보존하고 새 지시문을 추가합니다.');
+        if (finalReceipt && !detached && final.changed) console.warn('[CI] 최종 주입 소유 확인 실패 — 기존 내용은 보존하고 새 지시문을 추가합니다.');
     }
     _ciRememberRequest(body);
     if (report.missing.length) console.warn('[CI] 주입 위치 대체', report.missing);
