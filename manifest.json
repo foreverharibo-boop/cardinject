@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "혜담",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "homePage": "",
   "auto_update": false,
   "generate_interceptor": "ciInterceptor",

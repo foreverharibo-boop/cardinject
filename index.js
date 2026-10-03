@@ -1,6 +1,7 @@
 // CardInject
 import { applyCategoryInjections, chatEvidence, mainRequestDecision, requestFingerprint, resolveContent } from './injection-runtime.js';
 import { hasHookOwner, markHookOwner } from './hook-chain.js';
+import { FINAL_REQUEST_STATE, detachFinalInjection, appendFinalInjection } from './final-injection.js';
 
 const FETCH_HOOK_OWNER = Symbol('cardinject.fetch');
 const PROMPT_CAPTURE_OWNER = Symbol('cardinject.preparePrompt');
@@ -10,18 +11,18 @@ const _ciOwnPromptId = id => typeof id === 'string' && id.startsWith('cardinject
 
 const EXT_KEY = 'cardinject';
 // ST 실제 extension_prompt_types 값 (script.js/extensions.js 기준):
-//   0 = IN_PROMPT      : 캐릭터 카드 바로 다음, 채팅 시작 직전 (시스템 영역에서 "가장 강력")
+//   0 = IN_PROMPT      : 캐릭터 카드 바로 다음, 채팅 시작 직전
 //   1 = IN_CHAT         : 채팅 기록 내부, depth로 위치 지정
 //   2 = BEFORE_PROMPT   : 메인 시스템 프롬프트보다도 앞, 진짜 최상단
 const PT = { IN_PROMPT: 0, IN_CHAT: 1, BEFORE_PROMPT: 2 };
 
 // fetch hook 전용 타입
 const PT_NOTE = 12;    // 작가노트 본문 뒤에 삽입, 위치가 없으면 설정된 depth로 대체
+const PT_FINAL = 14; // 전송 직전 마지막 system 지시문, 표준 depth 등록 없음
 const PT_PRESET_REL = 13; // 특정 프리셋 프롬프트 바로 앞/뒤 (동적, POSITIONS 테이블 밖에서 처리)
 
-// ⚠️ ST 프롬프트 실제 순서 (중요):
-// [시스템 프롬프트] → [캐릭터 설명/시나리오] → [sys_top/sys_bottom/after_char 자리]
-//   → [채팅 기록 전체 (긴 대화일수록 여기가 대부분을 차지)] → [작가노트] → [AI 응답 직전]
+// 프리셋·후속 확장에 따라 조립 순서는 달라질 수 있다.
+// 최종 위치는 depth 등록 없이 전송 메시지 배열 끝에서 처리한다.
 
 const POSITIONS = {
     // ── setExtensionPrompt 처리 (진짜 최상단, 검증됨) ────────────────────────────
@@ -32,6 +33,7 @@ const POSITIONS = {
 
     // ── fetch hook 처리 ───────────────────────────────────────────────────────────
     with_note:    { label: '📝 작가노트',                                 type: PT_NOTE,    depth: 0       },
+    pre_assist:   { label: '🤖 AI 응답 바로 직전 (최종 system 지시문)',      type: PT_FINAL,   depth: 0       },
 };
 
 // 이전 버전 저장값 호환용 별칭 (드롭다운에는 안 뜸, 기존 데이터 해석 전용)
@@ -41,8 +43,7 @@ const POSITION_ALIASES = {
     chat_top:     'sys_top',
     chat_deep:    'chat_recent',
     chat_mid:     'chat_recent',
-    chat_bottom:  'chat_recent',
-    pre_assist:   'with_note',
+    chat_bottom:  'pre_assist', // 옛 최하단 선택값은 동일한 최종 위치로 해석
 };
 
 function _resolvePosition(key) {
@@ -111,6 +112,7 @@ const POSITION_IMPORTANCE = {
     sys_top:     'high',
     with_note:   'high',
     chat_recent: 'medium',
+    pre_assist:  'high',
 };
 function _importanceForPosition(posKey) {
     return POSITION_IMPORTANCE[posKey] || POSITION_IMPORTANCE[POSITION_ALIASES[posKey]] || 'medium';
@@ -240,14 +242,7 @@ function ensureSettings() {
     if (!g.perChar[key]) g.perChar[key] = { categories: [] };
     const charStore = g.perChar[key];
 
-    // 이전 버전 저장값 마이그레이션: 제거된 위치들 → 가장 가까운 남은 위치로
-    if (Array.isArray(charStore.categories)) {
-        charStore.categories.forEach(c => {
-            if (c.position && POSITION_ALIASES[c.position]) {
-                c.position = POSITION_ALIASES[c.position];
-            }
-        });
-    }
+    // 옛 위치는 실행/표시 때 별칭으로 해석하며 저장값을 재작성하지 않는다.
     return charStore;
 }
 
@@ -358,9 +353,9 @@ function _doInject(fn) {
         g.activeKeys.push(id);
         if (cat.enabled) count++;
 
-        // 요청 본문에서 처리하는 작가노트와 프리셋 상대 위치는
+        // 요청 본문에서 처리하는 작가노트·프리셋 상대 위치·최종 위치는
         // 여기서 기존 등록값만 지우고 건너뜀
-        if (pos.type === PT_NOTE || pos.type === PT_PRESET_REL) {
+        if (pos.type === PT_NOTE || pos.type === PT_PRESET_REL || pos.type === PT_FINAL) {
             try { fn(id, '', PT.IN_PROMPT, 0, false, 0); } catch(_) {}
             _directWrite(id, '', PT.IN_PROMPT, 0);
             return;
@@ -525,7 +520,7 @@ OUTPUT FORMAT — respond with ONLY this JSON structure, nothing else:
 FIELD VALUES:
 - content: Every sentence must make clear who it's about by using the literal macro "{{char}}" in place of the character's name "${s.name}" (e.g. write "{{char}} is stubborn" not "${s.name} is stubborn"). This lets the roleplay AI recognize whose trait it's reading. If the user/player character is referenced, use "{{user}}" the same way.
 - importance: "high" / "medium" / "low"
-- suggested_position: "sys_top" / "with_note" / "chat_recent"
+- suggested_position: "sys_top" / "with_note" / "chat_recent" / "pre_assist"
   - sys_top    : Core identity, personality, rules — must always be present (system top)
   - with_note  : Context that benefits from being near recent messages (author's note position)
   - chat_recent: Recent context, short-term behavior hints (depth 2, just above latest messages)
@@ -947,7 +942,7 @@ function render() {
           <div class="ci-row">
             <span class="ci-lbl">위치</span>
             <select class="ci-sel ci-pos-sel" data-i="${i}">
-              ${Object.entries(POSITIONS).map(([k,v])=>`<option value="${k}" ${c.position===k?'selected':''}>${v.label}</option>`).join('')}
+              ${Object.entries(POSITIONS).map(([k,v])=>`<option value="${k}" ${c.position===k || POSITION_ALIASES[c.position]===k?'selected':''}>${v.label}</option>`).join('')}
               ${_presetRelOptionsHtml(c.position)}
             </select>
           </div>
@@ -958,6 +953,11 @@ function render() {
                    pattern="[0-9]*" data-i="${i}"
                    value="${c.customDepth ?? pos.depth}">
             <span class="ci-hint">위로 몇 번째 메시지</span>
+          </div>`:''}
+          ${pos.type === PT_FINAL ? `
+          <div class="ci-row">
+            <span class="ci-lbl">방식</span>
+            <span class="ci-hint">depth 없이 본답변 전송 메시지 맨 끝에 system 지시문으로 추가합니다. 같은 위치는 목록 순서를 따릅니다.</span>
           </div>`:''}
           ${c.position === 'with_note' ? `
           <div class="ci-row">
@@ -1329,6 +1329,7 @@ jQuery(() => {
 // ── Main-request verification + request-only injection ─────────────────────
 let _ciChatSnapshot = [];
 const _ciConfirmedRequests = new Set();
+const _ciFinalReceipts = new Map();
 const _ciPreparedPrompts = new Map();
 const _ciResolvedCategories = new Map();
 let _ciRequestHooksRegistered = false;
@@ -1346,6 +1347,7 @@ function _ciNames() {
 function _ciResetRequestState() {
     _ciChatSnapshot = [];
     _ciConfirmedRequests.clear();
+    _ciFinalReceipts.clear();
     _ciPreparedPrompts.clear();
     _ciResolvedCategories.clear();
 }
@@ -1385,11 +1387,12 @@ function _ciResolvedCats(names) {
         if (!_ciResolvedCategories.has(cacheKey)) {
             _ciResolvedCategories.set(cacheKey, resolveContent(cat.content, names, _api?.substituteParams));
         }
-        return { ...cat, resolvedContent: _ciResolvedCategories.get(cacheKey) };
+        return { ...cat, position: _resolvePosition(cat.position).type === PT_FINAL ? 'pre_assist' : cat.position,
+            resolvedContent: _ciResolvedCategories.get(cacheKey) };
     });
 }
 
-function _ciApplyOutboundRequest(body, source, stack) {
+function _ciApplyOutboundRequest(body, source, stack, finalReceipt) {
     if (!_ciRuntimeActive) return null;
     const ctx = getCtx(), names = _ciNames();
     const decision = mainRequestDecision(body, stack, {
@@ -1404,13 +1407,28 @@ function _ciApplyOutboundRequest(body, source, stack) {
     _ciRememberRequest(body);
     const cats = _ciResolvedCats(names);
     if (!cats.length) return null;
+    const finalPass = source === 'fetch-final';
+    finalReceipt ??= _ciFinalReceipts.get(requestFingerprint(body));
+    const detached = finalPass && detachFinalInjection(body, finalReceipt);
+    const regularCats = cats.filter(cat => _resolvePosition(cat.position).type !== PT_FINAL);
     const metadata = ctx?.chatMetadata ?? ctx?.chat_metadata ?? {};
-    const report = applyCategoryInjections(body, cats, {
+    const report = applyCategoryInjections(body, regularCats, {
         names, presets: _getPresetPrompts(), prepared: _ciPreparedPrompts,
         noteText: _getAuthorNoteText().split(CI_NOTE_MARKER)[0],
         noteDepth: Number.isFinite(Number(metadata.note_depth)) ? Number(metadata.note_depth) : 4,
         substitute: _api?.substituteParams,
     });
+    if (finalPass) {
+        const final = appendFinalInjection(body, cats.filter(cat => _resolvePosition(cat.position).type === PT_FINAL));
+        report.changed ||= detached || final.changed;
+        report.categories.push(...final.categories);
+        report.finalReceipt = final.receipt;
+        if (final.receipt) {
+            _ciFinalReceipts.set(requestFingerprint(body), final.receipt);
+            if (_ciFinalReceipts.size > 8) _ciFinalReceipts.delete(_ciFinalReceipts.keys().next().value);
+        }
+        if (finalReceipt && !detached) console.warn('[CI] 최종 주입 소유 확인 실패 — 기존 내용은 보존하고 새 지시문을 추가합니다.');
+    }
     _ciRememberRequest(body);
     if (report.missing.length) console.warn('[CI] 주입 위치 대체', report.missing);
     if (source === 'fetch-final') {
@@ -1442,6 +1460,8 @@ export function _registerInjectionRequestHooks() {
         _ciChatSnapshot = chatEvidence(getCtx()?.chat);
         _installFetchHook();
         _installPromptCapture();
+        const fn = _findSetPrompt();
+        if (fn) _doInject(fn);
     });
     on('CHAT_COMPLETION_SETTINGS_READY', payload => {
         if (payload?.dryRun) return;
@@ -1471,8 +1491,8 @@ export function _installFetchHook() {
                 const serialized = options?.body ?? (requestInput ? await url.clone().text() : null);
                 if (typeof serialized === 'string') {
                     const body = JSON.parse(serialized);
-                    const report = _ciApplyOutboundRequest(body, 'fetch-final', stack);
-                    if (report?.changed) options = { ...options, body: JSON.stringify(body) };
+                    const report = _ciApplyOutboundRequest(body, 'fetch-final', stack, options?.[FINAL_REQUEST_STATE]);
+                    if (report?.changed) options = { ...options, body: JSON.stringify(body), [FINAL_REQUEST_STATE]: report.finalReceipt };
                 }
             } catch (error) {
                 console.warn('[CI] 전송 직전 주입 처리 실패 — 생성은 계속합니다.', error);
